@@ -95,6 +95,8 @@ def parse_eval_json(stdout: str) -> dict[str, Any]:
     if "score" not in obj or "higher_is_better" not in obj:
         raise ValueError("eval JSON must contain score and higher_is_better")
     obj["score"] = float(obj["score"])
+    if not (obj["score"] == obj["score"]) or obj["score"] in (float("inf"), float("-inf")):
+        raise ValueError(f"eval score must be a finite number, got: {obj['score']}")
     obj["higher_is_better"] = bool(obj["higher_is_better"])
     obj.setdefault("summary", "")
     return obj
@@ -105,8 +107,16 @@ def run_eval(run_dir: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"missing eval script: {EVAL}")
     EVAL.chmod(EVAL.stat().st_mode | 0o111)
 
-    p = run([str(EVAL), str(TARGET)], check=False)
+    p = subprocess.run(
+        [str(EVAL), str(TARGET)],
+        cwd=str(ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
     (run_dir / "eval.stdout.txt").write_text(p.stdout or "")
+    (run_dir / "eval.stderr.txt").write_text(p.stderr or "")
     obj = parse_eval_json(p.stdout or "")
     obj["returncode"] = p.returncode
     return obj
@@ -155,7 +165,9 @@ def direction_index() -> str:
                 if p.suffix.lower() in {".md", ".txt"}:
                     try:
                         txt = p.read_text(errors="replace")
-                        parts.append(f"\n--- {rel} ---\n{txt[:4000]}")
+                        truncated = txt[:4000]
+                        suffix = "\n[...truncated]" if len(txt) > 4000 else ""
+                        parts.append(f"\n--- {rel} ---\n{truncated}{suffix}")
                     except Exception:
                         parts.append(f"\n--- {rel} ---\n(unreadable text)")
                 else:
@@ -244,7 +256,6 @@ def ensure_baseline(run_dir: Path) -> dict[str, Any]:
 
 
 def save_diff(run_dir: Path) -> None:
-    run(["git", "-C", str(TARGET), "status", "--short"], check=False).stdout
     (run_dir / "git.status.txt").write_text(git(["status", "--short"], check=False).stdout or "")
     (run_dir / "git.diff.patch").write_text(git(["diff", "--binary"], check=False).stdout or "")
     (run_dir / "git.diff.stat.txt").write_text(git(["diff", "--stat"], check=False).stdout or "")
@@ -364,6 +375,8 @@ def check() -> None:
         p.mkdir(exist_ok=True)
     if not EVAL.exists():
         raise SystemExit("missing eval/run_eval.sh")
+    if "TODO_HARNESS_EVAL" in EVAL.read_text(errors="replace"):
+        print("WARNING: eval/run_eval.sh is still the placeholder; replace it or let the first run auto-generate one.", file=sys.stderr)
     print(f"root: {ROOT}")
     print(f"target repo: {TARGET}")
     print(f"eval: {EVAL}")
