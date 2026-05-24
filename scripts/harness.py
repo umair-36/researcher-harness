@@ -70,6 +70,7 @@ def ensure_target_repo() -> None:
         git(["init"])
         git(["config", "user.name", "research-harness"])
         git(["config", "user.email", "research-harness@example.invalid"])
+        git(["config", "commit.gpgsign", "false"])
         placeholder = TARGET / ".gitkeep"
         placeholder.touch(exist_ok=True)
         git(["add", "-A"])
@@ -79,6 +80,7 @@ def ensure_target_repo() -> None:
     # Make local commits work even in fresh clones without global git identity.
     git(["config", "user.name", "research-harness"], check=False)
     git(["config", "user.email", "research-harness@example.invalid"], check=False)
+    git(["config", "commit.gpgsign", "false"], check=False)
 
     # If this is the first harness run, capture the current tree as baseline.
     if not BEST.exists() and target_dirty():
