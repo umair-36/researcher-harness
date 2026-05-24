@@ -11,7 +11,7 @@ target/repo/
 The human direction material go here:
 
 ```text
-basis/
+paper/
 directions/
 ```
 
@@ -26,7 +26,7 @@ research-harness/
   opencode.jsonc
   .env.example
 
-  basis/                 # put the basis text, notes, or links here
+  paper/                 # put the paper, notes, or links here
     README.md
 
   directions/            # optional human-written research directions
