@@ -45,6 +45,21 @@ RUNS = ROOT / "runs"
 HISTORY = STATE / "history.jsonl"
 BEST = STATE / "best.json"
 
+# A lighter, cheaper model for the kb-researcher extraction subagent (same provider
+# as the default main model, so it reuses NVIDIA_API_KEY). Override with KB_AGENT_MODEL.
+FLASH_DEFAULT = "nvidia/deepseek-ai/deepseek-v4-flash"
+
+# Knowledge-base context budgeting (all optional; safe defaults, zero setup required).
+# A KB text file is inlined in full only if it is at most KB_INLINE_MAX_BYTES and the
+# running total of inlined text stays at most KB_INLINE_TOTAL_BYTES. Everything else
+# (large text, every PDF/binary, anything under knowledge_base/library/) goes to the
+# manifest and is fetched on demand via the kb-researcher subagent.
+KB_INLINE_MAX_BYTES_DEFAULT = 16_384
+KB_INLINE_TOTAL_BYTES_DEFAULT = 65_536
+KB_PREVIEW_CHARS = 200
+KB_TEXT_SUFFIXES = {".md", ".txt", ".markdown", ".rst", ".csv", ".json", ".yaml", ".yml"}
+KB_SKIP_NAMES = {"AGENTS.md", "README.md", ".gitignore", ".gitkeep"}
+
 
 def load_dotenv() -> dict[str, str]:
     env = os.environ.copy()
@@ -182,31 +197,152 @@ def collect_context_tail(max_lines: int = 20) -> str:
     return "\n".join(lines[-max_lines:])
 
 
-def knowledge_index() -> str:
-    """A truncated index of knowledge_base/ for the iteration prompt."""
+def _env_int(env: dict[str, str], key: str, default: int) -> int:
+    raw = env.get(key)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        val = int(raw.strip())
+    except ValueError:
+        return default
+    return val if val >= 0 else default
+
+
+def _human_size(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n / 1024:.1f}{unit}"
+        n /= 1024
+    return f"{n:.0f}B"
+
+
+def _classify_kb_files(env: dict[str, str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Walk knowledge_base/ and split files into (inline, manifest_only).
+
+    inline:        small text files whose full contents go into the prompt, subject to a
+                   per-file cap and a cumulative total cap.
+    manifest_only: large text files, ALL non-text files (PDFs/binaries), and anything
+                   under knowledge_base/library/ — referenced in the manifest and fetched
+                   on demand by the kb-researcher subagent.
+    Each entry: {rel, kind, size, lines, preview, text}.
+    """
+    inline: list[dict[str, Any]] = []
+    manifest_only: list[dict[str, Any]] = []
     if not KB.exists():
-        return ""
-    parts: list[str] = []
+        return inline, manifest_only
+
+    per_file_cap = _env_int(env, "KB_INLINE_MAX_BYTES", KB_INLINE_MAX_BYTES_DEFAULT)
+    total_cap = _env_int(env, "KB_INLINE_TOTAL_BYTES", KB_INLINE_TOTAL_BYTES_DEFAULT)
+    used = 0
+
     for p in sorted(KB.rglob("*")):
-        if not p.is_file() or p.name in {"AGENTS.md", ".gitignore", ".gitkeep"}:
+        if not p.is_file() or p.name in KB_SKIP_NAMES:
             continue
-        rel = p.relative_to(ROOT)
-        if p.suffix.lower() in {".md", ".txt"}:
+        rel_to_kb = p.relative_to(KB)
+        in_library = rel_to_kb.parts[:1] == ("library",)
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        is_text = p.suffix.lower() in KB_TEXT_SUFFIXES
+        entry: dict[str, Any] = {
+            "rel": str(p.relative_to(ROOT)),
+            "kind": "text" if is_text else f"binary ({p.suffix.lower() or 'no-ext'})",
+            "size": size,
+            "lines": None,
+            "preview": "",
+            "text": None,
+        }
+
+        if is_text:
             try:
                 txt = p.read_text(errors="replace")
-                truncated = txt[:4000]
-                suffix = "\n[...truncated]" if len(txt) > 4000 else ""
-                parts.append(f"\n--- {rel} ---\n{truncated}{suffix}")
             except Exception:
-                parts.append(f"\n--- {rel} ---\n(unreadable text)")
+                entry["preview"] = "(unreadable text)"
+                manifest_only.append(entry)
+                continue
+            entry["lines"] = txt.count("\n") + (1 if txt and not txt.endswith("\n") else 0)
+            entry["preview"] = next((ln.strip() for ln in txt.splitlines() if ln.strip()), "")[:KB_PREVIEW_CHARS]
+            nbytes = len(txt.encode("utf-8", errors="replace"))
+            if not in_library and nbytes <= per_file_cap and used + nbytes <= total_cap:
+                entry["text"] = txt
+                used += nbytes
+                inline.append(entry)
+            else:
+                manifest_only.append(entry)
         else:
-            parts.append(f"\n--- {rel} ---\n(non-text file present; open it directly if useful)")
+            # PDFs and other binaries are never inlined; kb-researcher extracts them.
+            manifest_only.append(entry)
+
+    return inline, manifest_only
+
+
+def knowledge_manifest(env: dict[str, str] | None = None) -> str:
+    """Render the knowledge-base section for the iteration prompt.
+
+    Two parts: the full text of the small 'core' files, then a manifest listing EVERY
+    file (path, type, size, lines, first-line preview). Large text and all PDFs/binaries
+    appear only in the manifest and must be read via the kb-researcher subagent rather
+    than dumped into context. The manifest lists inlined files too, so the agent always
+    has a complete map of paths even if delegation never happens.
+    """
+    env = env if env is not None else load_dotenv()
+    inline, manifest_only = _classify_kb_files(env)
+    if not inline and not manifest_only:
+        return ""
+
+    parts: list[str] = []
+    if inline:
+        parts.append("Inlined knowledge base (small curated material, full text):")
+        for e in inline:
+            parts.append(f"\n--- {e['rel']} ({e['lines']} lines, {_human_size(e['size'])}) ---\n{e['text']}")
+
+    parts.append("\nKnowledge base manifest (delegate large items to the kb-researcher subagent):")
+    for e in sorted(inline + manifest_only, key=lambda e: e["rel"]):
+        inlined = "inlined above" if e.get("text") is not None else "NOT inlined — extract on demand"
+        loc = f"{e['lines']} lines" if e["lines"] is not None else "binary/pdf"
+        preview = f" | first line: {e['preview']!r}" if e["preview"] else ""
+        parts.append(f"- {e['rel']} [{e['kind']}, {_human_size(e['size'])}, {loc}; {inlined}]{preview}")
+
     return "\n".join(parts).strip()
+
+
+def render_runtime_config(env: dict[str, str]) -> Path | None:
+    """Render a runtime OpenCode config with the kb-researcher model resolved.
+
+    The tracked opencode.jsonc ships a flash-tier default for the extraction subagent;
+    KB_AGENT_MODEL (if set) overrides it. We can't pass a per-subagent model on the CLI,
+    so we substitute it into a complete copy of the config and point OPENCODE_CONFIG at
+    it. Best-effort: if anything goes wrong we fall back to the tracked config, whose
+    static flash default still applies. Requires opencode.jsonc to keep // comments on
+    their own lines (it does).
+    """
+    src = ROOT / "opencode.jsonc"
+    if not src.exists():
+        return None
+    kb_model = (env.get("KB_AGENT_MODEL") or "").strip() or FLASH_DEFAULT
+    try:
+        body = "\n".join(ln for ln in src.read_text().splitlines() if not ln.lstrip().startswith("//"))
+        cfg = json.loads(body)
+        agents = cfg.get("agent")
+        if not isinstance(agents, dict) or "kb-researcher" not in agents:
+            return None  # nothing to override; use the tracked config as-is
+        agents["kb-researcher"]["model"] = kb_model
+        STATE.mkdir(exist_ok=True)
+        out = STATE / "opencode.runtime.json"
+        out.write_text(json.dumps(cfg, indent=2) + "\n")
+        return out
+    except Exception:
+        return None
 
 
 def invoke_opencode(prompt: str, run_dir: Path, title: str) -> int:
     env = load_dotenv()
     model = env.get("OPENCODE_MODEL", "nvidia/deepseek-ai/deepseek-v4-pro")
+
+    runtime_cfg = render_runtime_config(env)
+    if runtime_cfg is not None:
+        env["OPENCODE_CONFIG"] = str(runtime_cfg)
 
     cmd = [
         "opencode",
@@ -247,7 +383,8 @@ Allowed edit:
 
 Read:
 - target_repo/
-- knowledge_base/
+- knowledge_base/ (small notes are fine to read directly; for large files or PDFs, ask the
+  kb-researcher subagent for the specific facts you need instead of reading the whole file)
 
 Task:
 Create the simplest meaningful eval script for this repo. It must be deterministic, runnable from the harness root, and obey this contract:
@@ -315,6 +452,7 @@ def run_iteration() -> None:
     best = ensure_baseline(run_dir)
     reset_to_best(best)
 
+    env = load_dotenv()
     prompt = f"""
 You are running one autonomous research iteration in `researcher-harness`.
 
@@ -339,13 +477,24 @@ Best known result:
 Recent history:
 {collect_context_tail() or "(none)"}
 
-Knowledge base index:
-{knowledge_index() or "(no text notes; inspect knowledge_base/ directly if useful)"}
+Knowledge base:
+{knowledge_manifest(env) or "(no knowledge base material yet; inspect knowledge_base/ directly if it appears later)"}
+
+Using the knowledge base:
+- The "Inlined" material above is the full text of the small curated notes — use it directly.
+- For any manifest item marked "NOT inlined" (large notes, papers, PDFs, datasets), DO NOT read
+  the whole file into your own context. Delegate to the kb-researcher subagent with a SPECIFIC
+  question, e.g. "@kb-researcher In knowledge_base/paper.pdf, what hyperparameters and ablation
+  results does Section 4 report for the method we're improving?" It reads in an isolated context
+  and returns only the distilled findings with citations. Ask follow-ups as your plan narrows.
+- If the kb-researcher subagent is unavailable, fall back to reading the specific manifest paths
+  yourself, but only the parts you need (grep/section, or `pdftotext <file> -` for PDFs) — never
+  paste whole documents.
 
 Rules:
 1. Edit only files under target_repo/.
 2. Make one small coherent change.
-3. Use the knowledge base and past outcomes to choose the change.
+3. Use the knowledge base (inlined notes + kb-researcher findings) and past outcomes to choose the change.
 4. Run ./eval.sh target_repo before finishing if feasible.
 5. Do not edit harness.py, eval.sh, opencode.jsonc, AGENTS.md, state/, runs/, knowledge_base/, or the harness directories (setup/, orchestrator/, messaging/).
 6. Prefer simple, reviewable diffs over large rewrites.

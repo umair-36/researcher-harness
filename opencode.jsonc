@@ -16,6 +16,13 @@
             "context": 1000000,
             "output": 32768
           }
+        },
+        "deepseek-ai/deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 32768
+          }
         }
       }
     }
@@ -39,6 +46,32 @@
     "bash": "allow",
     "webfetch": "allow",
     "websearch": "allow"
+  },
+
+  // kb-researcher: the knowledge-base extraction subagent. The primary agent delegates
+  // here (via the task tool matched on this description, or @kb-researcher) to pull
+  // specific facts from large knowledge_base material (long notes, papers, PDFs). It
+  // reads in its OWN isolated context and returns only distilled findings, so the main
+  // loop's context stays small. Read-only (no edit/write/network). It defaults to a
+  // lighter/cheaper model; KB_AGENT_MODEL overrides the model at runtime.
+  "agent": {
+    "kb-researcher": {
+      "description": "Reads knowledge_base/ material (long notes, papers, PDFs) to answer a SPECIFIC question and returns only distilled findings with file+location citations. Use this instead of reading large knowledge_base files directly into context.",
+      "mode": "subagent",
+      "model": "nvidia/deepseek-ai/deepseek-v4-flash",
+      "temperature": 0.1,
+      "permission": {
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "bash": "allow",
+        "edit": "deny",
+        "write": "deny",
+        "webfetch": "deny",
+        "websearch": "deny"
+      },
+      "prompt": "You are kb-researcher, a read-only knowledge-base extraction agent for researcher-harness. You are given a SPECIFIC question from the primary agent. Find the answer in knowledge_base/ and return ONLY the distilled findings — never dump whole documents.\n\nProcess:\n1. Locate the relevant files under knowledge_base/ (the question usually names them; otherwise use glob/grep). Read only the relevant parts.\n2. For PDFs, the read tool may not parse them: extract text with bash via `pdftotext <path> -` (or `pdftotext -layout <path> - | sed -n '<from>,<to>p'` for a range). If pdftotext is missing, say so explicitly, try `pdfinfo`/`strings <path>` as a degraded fallback, and report what you could and could not extract.\n3. Answer the question directly and concisely. Quote only the few lines/numbers that matter (equations, hyperparameters, ablation results, constraints, directions).\n\nOutput:\n- A short direct answer first.\n- A 'Sources' list citing each finding as `path:line-range` (text) or `path p.N / section` (PDF).\n- If you cannot find the answer, say so and name where you looked.\n\nHard rules: read-only — never edit or write any file; never modify target_repo/; never paste an entire document; keep the response focused on the question asked."
+    }
   },
 
   "watcher": {

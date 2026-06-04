@@ -95,6 +95,23 @@ single JSON object on its last stdout line:
 Use `higher_is_better: true` for accuracy, pass rate, reward, etc.; `false` for
 loss, error, runtime, etc.
 
+## Knowledge base
+
+Drop papers, notes, and directions into `knowledge_base/`. To keep the agent's context
+clean as the material grows, the harness **inlines small text notes in full** and lists
+everything else (large notes, PDFs, anything under `knowledge_base/library/`) in a
+**manifest**. For those, the agent delegates to a built-in **`kb-researcher` subagent**,
+which reads the material in its own isolated context and returns only the distilled facts
+it was asked for — so a 50-page PDF never lands in the main loop's context. This is wired
+in automatically for OpenCode (an `agent` block in `opencode.jsonc`) and for manual Claude
+Code use (`.claude/agents/kb-researcher.md`); no setup required. The extractor defaults to a
+lighter, cheaper model.
+
+Optional knobs (all have sane defaults): `KB_INLINE_MAX_BYTES` and `KB_INLINE_TOTAL_BYTES`
+control how much text is inlined; `KB_AGENT_MODEL` overrides the extractor's model. PDFs are
+extracted with `pdftotext` under OpenCode (install `poppler-utils`); Claude Code reads them
+natively. See `knowledge_base/AGENTS.md`.
+
 ## Orchestrator
 
 A tiny driver that turns a user request into harness activity and reports back.

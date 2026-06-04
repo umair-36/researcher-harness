@@ -10,10 +10,15 @@ knowledge_base/
   paper.pdf      e.g. the paper                         (you provide)
   notes.md       e.g. your summary / key equations      (you provide)
   directions.md  e.g. what to try, constraints          (you provide)
+  library/       e.g. bulky papers / datasets           (you provide)
 ```
 
-The harness includes a truncated index of the text files here in every
-iteration prompt, and `AGENTS.md` is loaded as a standing OpenCode instruction.
+The harness inlines the small text notes here in full and lists every file (large
+notes, papers, PDFs, and anything under `library/`) in a manifest in each iteration
+prompt; non-inlined items are extracted on demand by the `kb-researcher` subagent in
+its own isolated context. `AGENTS.md` is loaded as a standing OpenCode instruction. The
+inline size budget is tunable via the optional `KB_INLINE_MAX_BYTES` /
+`KB_INLINE_TOTAL_BYTES` env vars (sane defaults; no setup required).
 
 ## What gets committed
 
