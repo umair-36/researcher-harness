@@ -17,9 +17,11 @@ pip install scikit-learn numpy
 
 ## Quick start
 
-Copy the example files into your harness checkout, then run normally:
+The harness root is `operational/`. Copy the example files into it, then run
+normally:
 
 ```bash
+cd operational
 cp -r examples/toy-classifier/target     target
 cp -r examples/toy-classifier/eval       eval
 cp -r examples/toy-classifier/paper      paper
@@ -31,7 +33,7 @@ Or use the automated test script, which runs everything with a local mock
 agent (no OpenCode or API key required):
 
 ```bash
-./scripts/test_harness.sh
+operational/scripts/test_harness.sh
 ```
 
 ## Files

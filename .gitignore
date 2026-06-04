@@ -74,6 +74,10 @@ docs/_build/
 # PyBuilder
 .pybuilder/
 target/
+# researcher-harness: keep the broad target/ ignore (for the real operational/target/repo
+# and the harness runtime), but track the toy-classifier example's target/ fixture.
+!operational/examples/**/target/
+!operational/examples/**/target/**
 
 # Jupyter Notebook
 .ipynb_checkpoints
