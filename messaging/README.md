@@ -13,8 +13,7 @@ messaging/
 
 ## Backends
 
-Select with `MESSAGING_BACKEND` in `operational/.env` (via
-`setup/setup_messaging.sh`):
+Select with `MESSAGING_BACKEND` in `.env` (via `setup/setup_messaging.sh`):
 
 | Backend | Direction | Config | Notes |
 |---------|-----------|--------|-------|

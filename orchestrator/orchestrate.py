@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Very lightweight orchestrator for researcher-harness.
 
-It sits one level above the operational research loop:
+It sits one level above the harness loop:
 
-    messaging  ->  decide  ->  operational/scripts (run_once / loop)  ->  messaging
+    messaging  ->  decide  ->  harness.py (run / loop)  ->  messaging
 
 That is: read a user request from the messaging layer, decide what to do,
 drive the harness, and report back. It is deliberately tiny and stdlib-only.
@@ -34,9 +34,8 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OPERATIONAL = REPO_ROOT / "operational"
-SCRIPTS = OPERATIONAL / "scripts"
-STATE = OPERATIONAL / "state"
+HARNESS = REPO_ROOT / "harness.py"
+STATE = REPO_ROOT / "state"
 BEST = STATE / "best.json"
 HISTORY = STATE / "history.jsonl"
 
@@ -49,13 +48,12 @@ env = messaging.load_env()
 NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
 
-# ── driving the operational loop ──────────────────────────────────────────────
+# ── driving the harness loop ──────────────────────────────────────────────────
 
 def run_iterations(n: int) -> tuple[int, str]:
-    loop = SCRIPTS / "loop.sh"
-    if not loop.exists():
-        return 1, f"missing {loop.relative_to(REPO_ROOT)}"
-    p = subprocess.run(["bash", str(loop), str(n)], cwd=str(OPERATIONAL),
+    if not HARNESS.exists():
+        return 1, f"missing {HARNESS.relative_to(REPO_ROOT)}"
+    p = subprocess.run(["python3", str(HARNESS), "loop", str(n)], cwd=str(REPO_ROOT),
                        text=True, capture_output=True)
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 

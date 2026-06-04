@@ -23,7 +23,7 @@
 
   "instructions": [
     "AGENTS.md",
-    "directions/*.md"
+    "knowledge_base/AGENTS.md"
   ],
 
   "permission": {
@@ -41,11 +41,11 @@
     "ignore": [
       "runs/**",
       "state/**",
-      "target/repo/.git/**",
-      "target/repo/.venv/**",
-      "target/repo/node_modules/**",
-      "target/repo/dist/**",
-      "target/repo/build/**"
+      "target_repo/.git/**",
+      "target_repo/.venv/**",
+      "target_repo/node_modules/**",
+      "target_repo/dist/**",
+      "target_repo/build/**"
     ]
   }
 }

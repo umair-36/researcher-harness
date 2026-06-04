@@ -1,4 +1,28 @@
 #!/usr/bin/env python3
+"""researcher-harness: the single high-level improvement loop.
+
+One iteration is deliberately boring:
+
+    reset target_repo/ to the best commit
+      -> OpenCode proposes and edits code in target_repo/
+        -> ./eval.sh target_repo scores it
+          -> keep the change if it improved, otherwise revert
+
+Everything the loop needs lives at the repo root:
+
+    target_repo/      the code OpenCode improves (a working tree it can edit)
+    knowledge_base/   papers, notes, directions the agent reads (read-only)
+    eval.sh           the scorer; the agent writes it once if it is a stub
+    opencode.jsonc    OpenCode configuration
+    AGENTS.md         the agent's rules
+    state/            cumulative memory (best.json, history.jsonl)   [runtime]
+    runs/             per-iteration logs and diffs                   [runtime]
+
+Usage:
+    python3 harness.py run         # one iteration
+    python3 harness.py loop [N]     # N iterations (default 10)
+    python3 harness.py check        # verify the harness is ready
+"""
 from __future__ import annotations
 
 import argparse
@@ -6,14 +30,16 @@ import datetime as dt
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "target" / "repo"
-EVAL = ROOT / "eval" / "run_eval.sh"
+ROOT = Path(__file__).resolve().parent
+TARGET = ROOT / "target_repo"
+KB = ROOT / "knowledge_base"
+EVAL = ROOT / "eval.sh"
 STATE = ROOT / "state"
 RUNS = ROOT / "runs"
 HISTORY = STATE / "history.jsonl"
@@ -68,24 +94,24 @@ def ensure_target_repo() -> None:
 
     if not target_is_git_repo():
         git(["init"])
-        git(["config", "user.name", "research-harness"])
-        git(["config", "user.email", "research-harness@example.invalid"])
+        git(["config", "user.name", "researcher-harness"])
+        git(["config", "user.email", "researcher-harness@example.invalid"])
         git(["config", "commit.gpgsign", "false"])
         placeholder = TARGET / ".gitkeep"
         placeholder.touch(exist_ok=True)
         git(["add", "-A"])
-        git(["commit", "-m", "research-harness baseline"])
+        git(["commit", "-m", "researcher-harness baseline"])
         return
 
     # Make local commits work even in fresh clones without global git identity.
-    git(["config", "user.name", "research-harness"], check=False)
-    git(["config", "user.email", "research-harness@example.invalid"], check=False)
+    git(["config", "user.name", "researcher-harness"], check=False)
+    git(["config", "user.email", "researcher-harness@example.invalid"], check=False)
     git(["config", "commit.gpgsign", "false"], check=False)
 
     # If this is the first harness run, capture the current tree as baseline.
     if not BEST.exists() and target_dirty():
         git(["add", "-A"])
-        git(["commit", "-m", "research-harness initial target state"])
+        git(["commit", "-m", "researcher-harness initial target state"])
 
 
 def parse_eval_json(stdout: str) -> dict[str, Any]:
@@ -156,24 +182,25 @@ def collect_context_tail(max_lines: int = 20) -> str:
     return "\n".join(lines[-max_lines:])
 
 
-def direction_index() -> str:
+def knowledge_index() -> str:
+    """A truncated index of knowledge_base/ for the iteration prompt."""
+    if not KB.exists():
+        return ""
     parts: list[str] = []
-    for base in [ROOT / "paper", ROOT / "directions"]:
-        if not base.exists():
+    for p in sorted(KB.rglob("*")):
+        if not p.is_file() or p.name in {"AGENTS.md", ".gitignore", ".gitkeep"}:
             continue
-        for p in sorted(base.rglob("*")):
-            if p.is_file():
-                rel = p.relative_to(ROOT)
-                if p.suffix.lower() in {".md", ".txt"}:
-                    try:
-                        txt = p.read_text(errors="replace")
-                        truncated = txt[:4000]
-                        suffix = "\n[...truncated]" if len(txt) > 4000 else ""
-                        parts.append(f"\n--- {rel} ---\n{truncated}{suffix}")
-                    except Exception:
-                        parts.append(f"\n--- {rel} ---\n(unreadable text)")
-                else:
-                    parts.append(f"\n--- {rel} ---\n(non-text file present)")
+        rel = p.relative_to(ROOT)
+        if p.suffix.lower() in {".md", ".txt"}:
+            try:
+                txt = p.read_text(errors="replace")
+                truncated = txt[:4000]
+                suffix = "\n[...truncated]" if len(txt) > 4000 else ""
+                parts.append(f"\n--- {rel} ---\n{truncated}{suffix}")
+            except Exception:
+                parts.append(f"\n--- {rel} ---\n(unreadable text)")
+        else:
+            parts.append(f"\n--- {rel} ---\n(non-text file present; open it directly if useful)")
     return "\n".join(parts).strip()
 
 
@@ -208,32 +235,31 @@ def make_eval_if_needed(run_dir: Path) -> None:
     if EVAL.exists() and "TODO_HARNESS_EVAL" not in EVAL.read_text(errors="replace"):
         return
 
-    prompt = f"""
-You are setting up the initial evaluator for research-harness.
+    prompt = """
+You are setting up the initial evaluator for researcher-harness.
 
 Allowed edit:
-- eval/run_eval.sh only
+- eval.sh only
 
 Read:
-- target/repo/
-- paper/
-- directions/
+- target_repo/
+- knowledge_base/
 
 Task:
-Create the simplest meaningful eval script for this paper/repo. It must be deterministic, runnable from the harness root, and obey this contract:
+Create the simplest meaningful eval script for this repo. It must be deterministic, runnable from the harness root, and obey this contract:
 
-  ./eval/run_eval.sh target/repo
+  ./eval.sh target_repo
 
 The final stdout line must be JSON:
-  {{"score": <number>, "higher_is_better": <true|false>, "summary": "<short metric description>"}}
+  {"score": <number>, "higher_is_better": <true|false>, "summary": "<short metric description>"}
 
-Prefer an existing test/benchmark/smoke command from target/repo. If the paper's real benchmark is expensive, create a cheap proxy eval and say so in the summary. Keep it boring.
+Prefer an existing test/benchmark/smoke command from target_repo. If the real benchmark is expensive, create a cheap proxy eval and say so in the summary. Keep it boring.
 """
-    code = invoke_opencode(prompt, run_dir, "research-harness create eval")
+    code = invoke_opencode(prompt, run_dir, "researcher-harness create eval")
     if code != 0:
-        raise RuntimeError("OpenCode failed while creating eval/run_eval.sh")
+        raise RuntimeError("OpenCode failed while creating eval.sh")
     if not EVAL.exists():
-        raise RuntimeError("OpenCode did not create eval/run_eval.sh")
+        raise RuntimeError("OpenCode did not create eval.sh")
     EVAL.chmod(EVAL.stat().st_mode | 0o111)
 
 
@@ -276,7 +302,8 @@ def run_iteration() -> None:
     RUNS.mkdir(exist_ok=True)
     ensure_target_repo()
 
-    run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    # Microsecond precision keeps run_ids unique even when iterations are fast.
+    run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S_%fZ")
     run_dir = RUNS / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
 
@@ -285,23 +312,22 @@ def run_iteration() -> None:
     reset_to_best(best)
 
     prompt = f"""
-You are running one autonomous research iteration in `research-harness`.
+You are running one autonomous research iteration in `researcher-harness`.
 
 Goal:
 Improve the target repository's eval score.
 
 Canonical target repo:
-- target/repo/
+- target_repo/
 
 Read-only evidence:
-- paper/
-- directions/
+- knowledge_base/
 - state/history.jsonl
 - state/best.json
 - runs/
 
 Evaluation command:
-- ./eval/run_eval.sh target/repo
+- ./eval.sh target_repo
 
 Best known result:
 {json.dumps(best, indent=2)}
@@ -309,20 +335,20 @@ Best known result:
 Recent history:
 {collect_context_tail() or "(none)"}
 
-Paper/direction notes index:
-{direction_index() or "(no text notes; inspect files directly if useful)"}
+Knowledge base index:
+{knowledge_index() or "(no text notes; inspect knowledge_base/ directly if useful)"}
 
 Rules:
-1. Edit only files under target/repo/.
+1. Edit only files under target_repo/.
 2. Make one small coherent change.
-3. Use the paper and past outcomes to choose the change.
-4. Run ./eval/run_eval.sh target/repo before finishing if feasible.
-5. Do not edit scripts/, eval/, state/, runs/, paper/, or directions/.
+3. Use the knowledge base and past outcomes to choose the change.
+4. Run ./eval.sh target_repo before finishing if feasible.
+5. Do not edit harness.py, eval.sh, opencode.jsonc, AGENTS.md, state/, runs/, knowledge_base/, or the harness directories (setup/, orchestrator/, messaging/).
 6. Prefer simple, reviewable diffs over large rewrites.
 
 Return a concise explanation of what changed and why.
 """
-    opencode_rc = invoke_opencode(prompt, run_dir, f"research-harness iteration {run_id}")
+    opencode_rc = invoke_opencode(prompt, run_dir, f"researcher-harness iteration {run_id}")
 
     save_diff(run_dir)
 
@@ -341,7 +367,7 @@ Return a concise explanation of what changed and why.
     commit = best.get("commit")
     if opencode_rc == 0 and eval_error is None and target_dirty() and is_better(eval_obj, best):
         git(["add", "-A"])
-        git(["commit", "-m", f"research-harness {run_id}: score {eval_obj['score']}"])
+        git(["commit", "-m", f"researcher-harness {run_id}: score {eval_obj['score']}"])
         commit = git(["rev-parse", "HEAD"]).stdout.strip()
         improved = True
         new_best = {
@@ -372,29 +398,61 @@ Return a concise explanation of what changed and why.
     print(json.dumps(record, indent=2, sort_keys=True))
 
 
+def run_loop(n: int) -> None:
+    completed = 0
+    for i in range(1, n + 1):
+        print(f"=== researcher-harness iteration {i}/{n} ===", file=sys.stderr)
+        try:
+            run_iteration()
+        except Exception as e:
+            print(f"researcher-harness: iteration {i} failed ({e}); "
+                  f"stopping after {completed} completed.", file=sys.stderr)
+            raise SystemExit(1)
+        completed += 1
+    print(f"researcher-harness: completed {completed}/{n} iterations.", file=sys.stderr)
+
+
 def check() -> None:
-    for p in [ROOT / "paper", ROOT / "directions", ROOT / "target", ROOT / "eval", ROOT / "scripts", STATE, RUNS]:
-        p.mkdir(exist_ok=True)
+    for p in [KB, TARGET, STATE, RUNS]:
+        p.mkdir(parents=True, exist_ok=True)
+
+    for tool in ("python3", "git"):
+        if shutil.which(tool) is None:
+            raise SystemExit(f"{tool} is required but not found in PATH")
+
+    if shutil.which("opencode") is None:
+        print("WARNING: opencode is not installed. Install it with setup/setup_opencode.sh "
+              "(curl -fsSL https://opencode.ai/install | bash).", file=sys.stderr)
+
     if not EVAL.exists():
-        raise SystemExit("missing eval/run_eval.sh")
+        raise SystemExit("missing eval.sh")
     if "TODO_HARNESS_EVAL" in EVAL.read_text(errors="replace"):
-        print("WARNING: eval/run_eval.sh is still the placeholder; replace it or let the first run auto-generate one.", file=sys.stderr)
-    print(f"root: {ROOT}")
+        print("WARNING: eval.sh is still the placeholder; replace it or let the first run "
+              "auto-generate one from knowledge_base/ and target_repo/.", file=sys.stderr)
+
+    print(f"root:        {ROOT}")
     print(f"target repo: {TARGET}")
-    print(f"eval: {EVAL}")
+    print(f"knowledge:   {KB}")
+    print(f"eval:        {EVAL}")
+    print("Setup check complete.")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("command", nargs="?", default="run", choices=["run"])
-    parser.add_argument("--check", action="store_true")
+    parser = argparse.ArgumentParser(
+        description="researcher-harness: autonomous improvement loop over target_repo/")
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("run", help="run a single improvement iteration")
+    lp = sub.add_parser("loop", help="run N improvement iterations (default 10)")
+    lp.add_argument("n", nargs="?", type=int, default=10)
+    sub.add_parser("check", help="verify the harness is ready to run")
     args = parser.parse_args()
 
-    if args.check:
+    cmd = args.cmd or "run"
+    if cmd == "check":
         check()
-        return
-
-    if args.command == "run":
+    elif cmd == "loop":
+        run_loop(args.n)
+    else:
         run_iteration()
 
 

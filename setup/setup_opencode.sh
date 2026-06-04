@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install OpenCode and prepare operational/.env.
+# Install OpenCode and prepare .env.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 
@@ -30,4 +30,6 @@ cat <<'EOF'
     2. Choose / change the model:
          setup/set_model.sh pro          # presets: pro, flash, llama, qwen
          setup/set_model.sh nvidia/deepseek-ai/deepseek-v4-flash nvapi-XXXX
+    3. Verify the harness is ready:
+         python3 harness.py check
 EOF

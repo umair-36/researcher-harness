@@ -1,109 +1,91 @@
 # researcher-harness
 
-A minimal agentic research loop around an existing code repository.
+A minimal, reusable harness that points an autonomous coding agent (OpenCode)
+at a repository and loops on measurable improvements. It carries none of the
+target's structure: you drop the code in `target_repo/` and the research
+material in `knowledge_base/`, and the harness does the rest.
 
-The loop itself is deliberately boring: OpenCode proposes and edits code,
-`eval/run_eval.sh` scores it, the harness records the result, keeps
-improvements, and reverts failures. A very lightweight orchestrator can drive
-that loop on your behalf and report progress over a messaging channel.
-
-## Top-level layout
+## Layout
 
 ```text
 researcher-harness/
-  operational/     # the research loop engine + everything it operates on
-  setup/           # bootstrap & configuration scripts (run these first)
-  orchestrator/    # very lightweight, pluggable loop driver
-  messaging/       # the channel the orchestrator talks over
-  README.md  LICENSE  INSTRUCTIONS.md
+  harness.py        # the loop: reset -> OpenCode edits target_repo/ -> eval.sh -> keep/revert
+  eval.sh           # the scorer (a stub; the first run writes a real one)
+  opencode.jsonc    # OpenCode configuration
+  AGENTS.md         # the agent's rules
+  knowledge_base/   # papers, notes, directions the agent reads (+ AGENTS.md guidance)
+  target_repo/      # the code the agent improves            [you provide, git-ignored]
+  setup/            # install OpenCode, set the model + API key, configure the rest
+  orchestrator/     # tiny pluggable driver: message -> decide -> harness -> report
+  messaging/        # the channel the orchestrator talks over
+  state/  runs/     # cumulative memory + per-iteration logs  [runtime, git-ignored]
 ```
 
-Four scope-specific directories:
-
-| Directory | What it is |
-|-----------|------------|
-| `operational/` | The harness root. Contains the engine (`scripts/`, `eval/`), its inputs (`paper/`, `directions/`, `target/`), its memory (`state/`, `runs/`), the example set, and the OpenCode config (`opencode.jsonc`, `AGENTS.md`, `.env`). |
-| `setup/` | One-time bootstrap: install OpenCode, set/reset the model + API key, configure the orchestrator and the messaging mechanism. |
-| `orchestrator/` | A tiny, pluggable layer above the loop: it reads requests from messaging, decides an action, runs the harness, and reports back. |
-| `messaging/` | A dependency-free messaging client with swappable backends (local file, ntfy, Telegram, Discord). |
-
-### operational/
-
-```text
-operational/
-  opencode.jsonc   AGENTS.md   .env.example   # OpenCode config + agent rules
-  scripts/         setup.sh run_once.sh loop.sh harness.py test_harness.sh
-  eval/            run_eval.sh                 # user-provided eval, or generated on first run
-  paper/           # the paper, notes, or links
-  directions/      # optional human-written research directions
-  target/          # clone/copy the open-source code into target/repo
-  state/           # machine-readable cumulative memory
-  runs/            # per-iteration logs, diffs, eval output
-  examples/        # self-contained toy-classifier example
-```
+The harness itself is one script. The other three concerns — OpenCode + its API
+setup, the orchestrator, and the messaging — each live in their own directory.
 
 ## Setup
 
-All configuration lives in **`operational/.env`**. The `setup/` scripts manage
-it for you (they create it from `operational/.env.example` on first use):
+All configuration lives in a single **`.env`** at the repo root. The `setup/`
+scripts manage it for you (they create it from `.env.example` on first use):
 
 ```bash
-setup/setup_opencode.sh                 # install OpenCode, scaffold operational/.env
+setup/setup_opencode.sh                 # install OpenCode, scaffold .env
 setup/set_model.sh pro                  # model preset: pro | flash | llama | qwen,
                                         # or a literal provider/model-id (+ optional API key)
 setup/setup_orchestrator.sh none        # none | nemotron | openclaw | custom
 setup/setup_messaging.sh localfile      # localfile | ntfy | telegram | discord
 ```
 
-Then finish the harness setup and authenticate OpenCode if needed:
+Authenticate OpenCode if needed, then verify the harness:
 
 ```bash
-operational/scripts/setup.sh
-
-# if OpenCode is not yet authenticated:
-opencode auth login --provider nvidia
+opencode auth login --provider nvidia   # if not already authenticated
+python3 harness.py check
 ```
 
-Put the target code, the paper, and any direction files in place:
+Put the code and the research material in place:
 
 ```bash
-rm -rf operational/target/repo
-git clone <paper-code-repo-url> operational/target/repo
-cp ~/Downloads/paper.pdf operational/paper/
+git clone <repo-url> target_repo
+cp ~/Downloads/paper.pdf knowledge_base/
 
-cat > operational/directions/ideas.md <<'EOF'
+cat > knowledge_base/directions.md <<'EOF'
 Improve the eval score without increasing inference time by more than 10%.
 Prefer small, easily reversible changes.
 EOF
 ```
 
-Provide `operational/eval/run_eval.sh`, or leave the stub and let the first
-OpenCode run generate one from the paper and target repo.
+Provide `eval.sh`, or leave the stub and let the first run generate one from
+`knowledge_base/` and `target_repo/`.
 
-## The operational loop
+## The loop
 
 Run one iteration, or many:
 
 ```bash
-operational/scripts/run_once.sh
-operational/scripts/loop.sh 20
+python3 harness.py run
+python3 harness.py loop 20
 ```
+
+Each iteration resets `target_repo/` to the best commit, lets OpenCode make one
+change, scores it with `eval.sh`, and keeps the change only if it improved.
 
 Inspect outcomes:
 
 ```bash
-cat operational/state/history.jsonl
-cat operational/state/best.json
-ls operational/runs/
+cat state/best.json
+cat state/history.jsonl
+ls runs/
 ```
 
 ### Eval contract
 
-`operational/eval/run_eval.sh` receives the target repo path as its first
-argument and must print a single JSON object on its last stdout line:
+`eval.sh` receives the target repo path as its first argument and must print a
+single JSON object on its last stdout line:
 
 ```bash
-./eval/run_eval.sh target/repo
+./eval.sh target_repo
 ```
 
 ```json
@@ -127,9 +109,9 @@ The decision backend is **pluggable with no hard default** (`ORCH_BACKEND`):
 An action is `{"action": "run"|"status"|"stop", "iterations": N, "reason": "…"}`.
 
 ```bash
-orchestrator/run.sh status        # report best score + recent history
-orchestrator/run.sh run 5         # run 5 iterations, then report
-orchestrator/run.sh serve         # poll messaging and act until told to stop
+orchestrator/run.sh status          # report best score + recent history
+orchestrator/run.sh run 5           # run 5 iterations, then report
+orchestrator/run.sh serve           # poll messaging and act until told to stop
 orchestrator/run.sh decide "run 3"  # debug: show how a message routes
 ```
 
@@ -153,12 +135,12 @@ python3 messaging/client.py send "hi"     # send a message
 python3 messaging/client.py test          # send a test message
 ```
 
-See `setup/README.md`, `orchestrator/README.md`, and `messaging/README.md` for
-details.
+See `setup/README.md`, `orchestrator/README.md`, `messaging/README.md`, and
+`knowledge_base/AGENTS.md` for details.
 
 ## Model configuration
 
-Default `operational/.env.example` uses:
+`.env.example` defaults to:
 
 ```bash
 OPENCODE_MODEL=nvidia/deepseek-ai/deepseek-v4-pro
@@ -166,14 +148,13 @@ NVIDIA_API_KEY=nvapi-...
 ```
 
 Switch models with `setup/set_model.sh <preset|provider/model-id> [API_KEY]`.
-The harness reads `OPENCODE_MODEL` from `operational/.env`; `opencode.jsonc`
-only supplies a fallback default, so the harness logic never depends on the
-model.
+The harness reads `OPENCODE_MODEL` from `.env`; `opencode.jsonc` only supplies a
+fallback default, so the harness logic never depends on the model.
 
 ## Safety boundary
 
 Autonomous coding requires shell/edit permissions; run this in a disposable
-working tree or container. Keep secrets out of `operational/target/repo`,
-`operational/paper`, and `operational/directions`. The default messaging
-backend (`localfile`) sends nothing off the machine; `ntfy`, `telegram`, and
-`discord` publish content to an external service — enable them deliberately.
+working tree or container. Keep secrets out of `target_repo/` and
+`knowledge_base/`. The default messaging backend (`localfile`) sends nothing off
+the machine; `ntfy`, `telegram`, and `discord` publish content to an external
+service — enable them deliberately.

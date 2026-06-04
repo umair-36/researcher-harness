@@ -31,7 +31,7 @@ case "$backend" in
     prompt orch_model "Nemotron NIM model id (verify at build.nvidia.com)" \
       "nvidia/nvidia/llama-3.1-nemotron-nano-8b-v1"
     upsert_env ORCH_MODEL "$orch_model"
-    info "Ensure NVIDIA_API_KEY is set (setup/set_model.sh ... <API_KEY> or edit operational/.env)."
+    info "Ensure NVIDIA_API_KEY is set (setup/set_model.sh ... <API_KEY> or edit .env)."
     ;;
   openclaw|custom)
     upsert_env ORCH_BACKEND "$backend"
@@ -40,7 +40,7 @@ case "$backend" in
     if [[ -n "$orch_cmd" ]]; then
       upsert_env ORCH_CMD "$orch_cmd"
     else
-      warn "ORCH_CMD left empty; set it in operational/.env before serving"
+      warn "ORCH_CMD left empty; set it in .env before serving"
     fi
     info 'Contract: read the user message on stdin, print on stdout:'
     info '  {"action":"run|status|stop","iterations":N,"reason":"..."}'

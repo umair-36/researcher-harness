@@ -4,7 +4,7 @@
 One small interface over several pluggable backends. The orchestrator uses it
 to receive user requests and report results; you can also use it standalone.
 
-Backends (selected by MESSAGING_BACKEND in operational/.env):
+Backends (selected by MESSAGING_BACKEND in .env):
 
     localfile   inbox/outbox files under messaging/ (default; no external egress)
     ntfy        ntfy.sh topic           (simple push; optional inbound polling)
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ENV_FILE = REPO_ROOT / "operational" / ".env"
+ENV_FILE = REPO_ROOT / ".env"
 MSG_DIR = REPO_ROOT / "messaging"
 INBOX = MSG_DIR / "inbox"
 OUTBOX = MSG_DIR / "outbox"
@@ -40,7 +40,7 @@ STATE_FILE = MSG_DIR / ".state.json"
 
 
 def load_env() -> dict[str, str]:
-    """os.environ overlaid with operational/.env (environment wins)."""
+    """os.environ overlaid with .env (environment wins)."""
     env = dict(os.environ)
     if ENV_FILE.exists():
         for raw in ENV_FILE.read_text().splitlines():

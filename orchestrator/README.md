@@ -1,11 +1,11 @@
 # orchestrator/
 
-A very lightweight layer above the operational research loop. It reads a user
-request from the messaging channel, decides what to do, drives the harness, and
-reports the result back:
+A very lightweight layer above the harness loop. It reads a user request from
+the messaging channel, decides what to do, drives the harness, and reports the
+result back:
 
 ```text
-messaging  ->  decide  ->  operational/scripts (run_once / loop)  ->  messaging
+messaging  ->  decide  ->  harness.py (run / loop)  ->  messaging
 ```
 
 It is intentionally tiny and stdlib-only (`orchestrate.py`, ~200 lines). Drive
@@ -20,7 +20,7 @@ orchestrator/run.sh decide "run 3"    # debug: print the action a message maps t
 
 ## Decision backends (pluggable, no hard default)
 
-Set `ORCH_BACKEND` in `operational/.env` (via `setup/setup_orchestrator.sh`):
+Set `ORCH_BACKEND` in `.env` (via `setup/setup_orchestrator.sh`):
 
 | `ORCH_BACKEND` | How a message becomes an action |
 |----------------|---------------------------------|
