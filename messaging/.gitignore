@@ -1,0 +1,6 @@
+# Runtime messages and poll markers are ephemeral; keep the dirs, not the contents.
+inbox/*
+outbox/*
+.state.json
+!inbox/.gitkeep
+!outbox/.gitkeep
