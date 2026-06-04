@@ -220,7 +220,11 @@ def invoke_opencode(prompt: str, run_dir: Path, title: str) -> int:
     if env.get("OPENCODE_CONTINUE", "0") == "1":
         cmd.append("--continue")
 
-    if env.get("OPENCODE_AUTO_APPROVE", "0") == "1":
+    # The harness assumes a sandbox and headless, unattended operation, so it
+    # skips interactive permission prompts by default — a run with no human in
+    # the loop cannot answer them. Set OPENCODE_AUTO_APPROVE=0 only for manual,
+    # supervised runs in a trusted environment.
+    if env.get("OPENCODE_AUTO_APPROVE", "1") != "0":
         cmd.append("--dangerously-skip-permissions")
 
     cmd.append(prompt)
@@ -429,6 +433,12 @@ def check() -> None:
     if "TODO_HARNESS_EVAL" in EVAL.read_text(errors="replace"):
         print("WARNING: eval.sh is still the placeholder; replace it or let the first run "
               "auto-generate one from knowledge_base/ and target_repo/.", file=sys.stderr)
+
+    if load_dotenv().get("OPENCODE_AUTO_APPROVE", "1") == "0":
+        print("WARNING: OPENCODE_AUTO_APPROVE=0 disables --dangerously-skip-permissions; "
+              "headless runs will stall on permission prompts. The harness assumes a "
+              "sandbox and unattended operation — leave it unset or 1 unless you are "
+              "supervising the run.", file=sys.stderr)
 
     print(f"root:        {ROOT}")
     print(f"target repo: {TARGET}")

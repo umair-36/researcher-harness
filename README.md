@@ -153,8 +153,10 @@ fallback default, so the harness logic never depends on the model.
 
 ## Safety boundary
 
-Autonomous coding requires shell/edit permissions; run this in a disposable
-working tree or container. Keep secrets out of `target_repo/` and
-`knowledge_base/`. The default messaging backend (`localfile`) sends nothing off
-the machine; `ntfy`, `telegram`, and `discord` publish content to an external
-service — enable them deliberately.
+The harness assumes it runs **in a sandbox** and **headlessly, with no human in
+the loop**: OpenCode is invoked with `--dangerously-skip-permissions` by default
+(and every tool in `opencode.jsonc` is `allow`) so iterations never block on a
+permission prompt. Run it only in a disposable working tree or container, and
+keep secrets out of `target_repo/` and `knowledge_base/`. The default messaging
+backend (`localfile`) sends nothing off the machine; `ntfy`, `telegram`, and
+`discord` publish content to an external service — enable them deliberately.

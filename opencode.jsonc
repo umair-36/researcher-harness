@@ -26,6 +26,10 @@
     "knowledge_base/AGENTS.md"
   ],
 
+  // Headless, sandboxed autonomy: every tool is allowed so a run with no human
+  // in the loop never blocks on a permission prompt. The sandbox and the
+  // environment's network policy are the real boundary. The harness also passes
+  // --dangerously-skip-permissions by default (OPENCODE_AUTO_APPROVE).
   "permission": {
     "read": "allow",
     "grep": "allow",
@@ -33,8 +37,8 @@
     "edit": "allow",
     "write": "allow",
     "bash": "allow",
-    "webfetch": "ask",
-    "websearch": "ask"
+    "webfetch": "allow",
+    "websearch": "allow"
   },
 
   "watcher": {
