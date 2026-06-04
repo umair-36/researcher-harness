@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Set / reset / change the OpenCode model + provider API key in operational/.env.
-# The harness reads OPENCODE_MODEL from operational/.env, so this is all it takes
+# Set / reset / change the OpenCode model + provider API key in .env.
+# The harness reads OPENCODE_MODEL from .env, so this is all it takes
 # to switch models; opencode.jsonc only supplies a fallback default.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
@@ -50,6 +50,6 @@ if [[ -n "$api_key" ]]; then
   upsert_env "$key_var" "$api_key"
 else
   info "API key unchanged. Provide it with: setup/set_model.sh $sel <API_KEY>"
-  info "  or edit operational/.env directly: ${key_var}=..."
+  info "  or edit .env directly: ${key_var}=..."
 fi
 info "Verify the model id is available for your account. The harness uses OPENCODE_MODEL."

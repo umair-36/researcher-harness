@@ -1,0 +1,6 @@
+# Keep the harness docs; ignore the research material dropped in here so the
+# repo stays minimal. Force-add (git add -f ...) anything you want to version.
+*
+!.gitignore
+!AGENTS.md
+!README.md

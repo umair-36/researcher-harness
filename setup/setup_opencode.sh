@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install OpenCode and prepare operational/.env.
+# Install OpenCode and prepare .env.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 
@@ -22,6 +22,16 @@ else
   fi
 fi
 
+# Soft check: the kb-researcher subagent extracts text from knowledge_base PDFs with
+# pdftotext under OpenCode. Not fatal — text material works without it, and Claude Code
+# reads PDFs natively.
+if command -v pdftotext >/dev/null 2>&1; then
+  ok "pdftotext available (PDF extraction for the kb-researcher subagent)"
+else
+  warn "pdftotext not found; knowledge_base PDFs can't be text-extracted under OpenCode."
+  warn "  Install poppler-utils if you'll use PDFs: apt-get install poppler-utils (or: brew install poppler)."
+fi
+
 cat <<'EOF'
 
   Next:
@@ -30,4 +40,6 @@ cat <<'EOF'
     2. Choose / change the model:
          setup/set_model.sh pro          # presets: pro, flash, llama, qwen
          setup/set_model.sh nvidia/deepseek-ai/deepseek-v4-flash nvapi-XXXX
+    3. Verify the harness is ready:
+         python3 harness.py check
 EOF

@@ -1,15 +1,14 @@
 # setup/
 
 One-time bootstrap and configuration scripts. They all read and write the
-single config file **`operational/.env`** (created from
-`operational/.env.example` on first use), so the harness, orchestrator, and
-messaging client stay in sync.
+single config file **`.env`** (created from `.env.example` on first use), so
+the harness, orchestrator, and messaging client stay in sync.
 
 Run them in this order (each is idempotent and safe to re-run):
 
 | Script | Purpose |
 |--------|---------|
-| `setup_opencode.sh` | Install OpenCode (`https://opencode.ai/install`) and scaffold `operational/.env`. Prints auth instructions. |
+| `setup_opencode.sh` | Install OpenCode (`https://opencode.ai/install`) and scaffold `.env`. Prints auth instructions. |
 | `set_model.sh <sel> [KEY]` | Set / reset / change the OpenCode model and provider API key. |
 | `setup_orchestrator.sh [backend]` | Configure the lightweight orchestrator: `none`, `nemotron`, `openclaw`, or `custom`. |
 | `setup_messaging.sh [backend]` | Configure messaging: `localfile`, `ntfy`, `telegram`, or `discord`. |

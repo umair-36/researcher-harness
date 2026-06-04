@@ -2,28 +2,28 @@
 # Shared helpers for the setup/ scripts. Source this, do not run it directly.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="$REPO_ROOT/operational/.env"
-ENV_EXAMPLE="$REPO_ROOT/operational/.env.example"
+ENV_FILE="$REPO_ROOT/.env"
+ENV_EXAMPLE="$REPO_ROOT/.env.example"
 
 info() { printf '  - %s\n' "$*"; }
 ok()   { printf '  [ok] %s\n' "$*"; }
 warn() { printf '  [warn] %s\n' "$*" >&2; }
 err()  { printf '  [err] %s\n' "$*" >&2; }
 
-# Create operational/.env from the example (or empty) if it is missing.
+# Create .env from the example (or empty) if it is missing.
 ensure_env() {
   if [[ ! -f "$ENV_FILE" ]]; then
     if [[ -f "$ENV_EXAMPLE" ]]; then
       cp "$ENV_EXAMPLE" "$ENV_FILE"
-      info "created operational/.env from .env.example"
+      info "created .env from .env.example"
     else
       : > "$ENV_FILE"
-      info "created empty operational/.env"
+      info "created empty .env"
     fi
   fi
 }
 
-# upsert_env KEY VALUE  -> set KEY=VALUE in operational/.env (replace or append).
+# upsert_env KEY VALUE  -> set KEY=VALUE in .env (replace or append).
 upsert_env() {
   local key="$1" val="$2" esc
   ensure_env
