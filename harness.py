@@ -330,7 +330,7 @@ def knowledge_manifest(env: dict[str, str] | None = None) -> str:
 
 
 def render_runtime_config(env: dict[str, str]) -> Path | None:
-    """Render a runtime OpenCode config with the kb-researcher model resolved.
+    """Render a runtime OpenCode config with agent models resolved.
 
     The tracked opencode.jsonc ships a flash-tier default for the extraction subagent;
     KB_AGENT_MODEL (if set) overrides it. We can't pass a per-subagent model on the CLI,
@@ -338,22 +338,42 @@ def render_runtime_config(env: dict[str, str]) -> Path | None:
     it. Best-effort: if anything goes wrong we fall back to the tracked config, whose
     static flash default still applies. Requires opencode.jsonc to keep // comments on
     their own lines (it does).
+
+    Also overrides the lightweight internal agents (title, summarizer, task) to use the
+    resolved open model. These default to a small paid model that fails when only free-tier
+    provider keys are configured (e.g. OpenRouter free models). Pinning them to the open
+    model keeps the harness functional with free-only setups.
     """
     src = ROOT / "opencode.jsonc"
     if not src.exists():
         return None
     kb_model = (env.get("KB_AGENT_MODEL") or "").strip()
     if not kb_model:
-        # Flash-tier by default, but if its provider key is missing use the open model
-        # so the kb-researcher subagent also works when no NVIDIA key is configured.
-        kb_model = FLASH_DEFAULT if _model_usable(FLASH_DEFAULT, env) else _open_model(env)
+        # Flash-tier by default; if its provider key is missing fall through to the
+        # first usable model in the main chain (covers free-only setups such as a
+        # free OpenRouter model where neither NVIDIA nor OpenCode Zen is authenticated).
+        if _model_usable(FLASH_DEFAULT, env):
+            kb_model = FLASH_DEFAULT
+        else:
+            chain = opencode_model_chain(env)
+            kb_model = chain[0] if chain else _open_model(env)
     try:
         body = "\n".join(ln for ln in src.read_text().splitlines() if not ln.lstrip().startswith("//"))
         cfg = json.loads(body)
         agents = cfg.get("agent")
-        if not isinstance(agents, dict) or "kb-researcher" not in agents:
-            return None  # nothing to override; use the tracked config as-is
+        if not isinstance(agents, dict):
+            cfg["agent"] = {}
+            agents = cfg["agent"]
+        agents.setdefault("kb-researcher", {})
         agents["kb-researcher"]["model"] = kb_model
+        # Pin the lightweight internal agents to the first usable model in the chain so
+        # they don't fall back to a paid default (e.g. claude-haiku) when using free-only
+        # keys (e.g. a free OpenRouter model).
+        chain = opencode_model_chain(env)
+        open_model = chain[0] if chain else _open_model(env)
+        for internal_agent in ("title", "summarizer", "task"):
+            agents.setdefault(internal_agent, {})
+            agents[internal_agent]["model"] = open_model
         STATE.mkdir(exist_ok=True)
         out = STATE / "opencode.runtime.json"
         out.write_text(json.dumps(cfg, indent=2) + "\n")
@@ -516,7 +536,7 @@ def ensure_baseline(run_dir: Path) -> dict[str, Any]:
         "higher_is_better": eval_obj["higher_is_better"],
         "summary": eval_obj.get("summary", ""),
         "commit": commit,
-        "created_at": dt.datetime.now(dt.UTC).isoformat(),
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     write_json(BEST, best)
     append_history({"event": "baseline", **best})
@@ -543,7 +563,7 @@ def run_iteration() -> None:
     ensure_target_repo()
 
     # Microsecond precision keeps run_ids unique even when iterations are fast.
-    run_id = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S_%fZ")
+    run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     run_dir = RUNS / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
 
@@ -628,7 +648,7 @@ Return a concise explanation of what changed and why.
             "higher_is_better": eval_obj["higher_is_better"],
             "summary": eval_obj.get("summary", ""),
             "commit": commit,
-            "created_at": dt.datetime.now(dt.UTC).isoformat(),
+            "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         }
         write_json(BEST, new_best)
     else:
