@@ -166,7 +166,41 @@ NVIDIA_API_KEY=nvapi-...
 
 Switch models with `setup/set_model.sh <preset|provider/model-id> [API_KEY]`.
 The harness reads `OPENCODE_MODEL` from `.env`; `opencode.jsonc` only supplies a
-fallback default, so the harness logic never depends on the model.
+default model id, so the harness logic never depends on the model.
+
+### Falling back to free models
+
+NVIDIA NIM's stronger models are frequently overloaded or unavailable. Set
+`OPENCODE_FALLBACK_MODELS` to a comma-separated, ordered list and the harness
+retries with the next model whenever the preferred one fails — a nonzero exit, or
+a hang past `OPENCODE_TIMEOUT_SECONDS` (set e.g. `1800` to catch a provider that
+stalls instead of erroring). Each model that runs is recorded in
+`runs/<run_id>/opencode.attempts.txt`, and `python3 harness.py check` prints the
+resolved chain.
+
+Free **OpenCode Zen** models (`opencode/<id>`, authenticated once with
+`opencode auth login`) make good fallbacks. The free set rotates, so list the
+current ids rather than hardcoding them:
+
+```bash
+setup/set_model.sh list                                    # = `opencode models`
+setup/set_model.sh fallback "opencode/big-pickle,opencode/nemotron-3-super"
+```
+
+Leave `OPENCODE_FALLBACK_MODELS` empty to disable fallback (the default). See
+https://opencode.ai/zen for the current free models.
+
+**No API key? The open model engages automatically.** A model whose provider
+needs a key (e.g. the default `nvidia/...`) is treated as unrunnable when that
+key is unset or still the `…REPLACE_ME` placeholder. The harness then skips it
+and runs on the free open model (`OPENCODE_OPEN_MODEL`, default an OpenCode Zen
+model) — so a fresh checkout with no `NVIDIA_API_KEY` works out of the box once
+you `opencode auth login`. `python3 harness.py check` prints the resolved chain
+and warns when this kicks in. Set the open model with:
+
+```bash
+setup/set_model.sh open opencode/big-pickle
+```
 
 ## Safety boundary
 

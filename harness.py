@@ -45,9 +45,31 @@ RUNS = ROOT / "runs"
 HISTORY = STATE / "history.jsonl"
 BEST = STATE / "best.json"
 
+# The preferred main worker model; override with OPENCODE_MODEL in .env. When this
+# provider is overloaded or unavailable (NVIDIA NIM frequently is), the harness
+# retries with the models in OPENCODE_FALLBACK_MODELS — see opencode_model_chain.
+DEFAULT_MODEL = "nvidia/deepseek-ai/deepseek-v4-pro"
+
 # A lighter, cheaper model for the kb-researcher extraction subagent (same provider
 # as the default main model, so it reuses NVIDIA_API_KEY). Override with KB_AGENT_MODEL.
 FLASH_DEFAULT = "nvidia/deepseek-ai/deepseek-v4-flash"
+
+# Providers whose models need an API key in .env, and the var that holds it. A model
+# whose provider is listed here only runs when that key is set to a real value (not
+# empty and not the .env.example "...REPLACE_ME" placeholder). Providers not listed
+# (e.g. `opencode`, which uses `opencode auth login`) need no key and are always usable.
+PROVIDER_KEY_VARS = {
+    "nvidia": "NVIDIA_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
+# Free open model the harness uses automatically when the configured model's provider
+# has no usable key (e.g. no NVIDIA_API_KEY) — so the loop still runs with no key set.
+# An OpenCode Zen model (free tier via `opencode auth login`); the free set rotates, so
+# verify the id with `setup/set_model.sh list`. Override with OPENCODE_OPEN_MODEL.
+DEFAULT_OPEN_MODEL = "opencode/big-pickle"
 
 # Knowledge-base context budgeting (all optional; safe defaults, zero setup required).
 # A KB text file is inlined in full only if it is at most KB_INLINE_MAX_BYTES and the
@@ -320,7 +342,11 @@ def render_runtime_config(env: dict[str, str]) -> Path | None:
     src = ROOT / "opencode.jsonc"
     if not src.exists():
         return None
-    kb_model = (env.get("KB_AGENT_MODEL") or "").strip() or FLASH_DEFAULT
+    kb_model = (env.get("KB_AGENT_MODEL") or "").strip()
+    if not kb_model:
+        # Flash-tier by default, but if its provider key is missing use the open model
+        # so the kb-researcher subagent also works when no NVIDIA key is configured.
+        kb_model = FLASH_DEFAULT if _model_usable(FLASH_DEFAULT, env) else _open_model(env)
     try:
         body = "\n".join(ln for ln in src.read_text().splitlines() if not ln.lstrip().startswith("//"))
         cfg = json.loads(body)
@@ -336,39 +362,112 @@ def render_runtime_config(env: dict[str, str]) -> Path | None:
         return None
 
 
+def _key_is_set(env: dict[str, str], var: str) -> bool:
+    """True if env[var] looks like a real key: present, non-empty, not the placeholder."""
+    val = (env.get(var) or "").strip()
+    return bool(val) and not val.upper().endswith("REPLACE_ME")
+
+
+def _model_usable(model: str, env: dict[str, str]) -> bool:
+    """Can this provider/model-id actually run with the keys in env?
+
+    A model is usable when its provider needs no API key (anything not in
+    PROVIDER_KEY_VARS, e.g. `opencode`, which authenticates via `opencode auth login`)
+    or that provider's key is set to a real value. This is what lets the harness skip
+    the default `nvidia/...` model — and engage the open fallback — when no NVIDIA key
+    is configured.
+    """
+    provider = model.split("/", 1)[0]
+    key_var = PROVIDER_KEY_VARS.get(provider)
+    return key_var is None or _key_is_set(env, key_var)
+
+
+def _open_model(env: dict[str, str]) -> str:
+    """The free open model to use when no keyed provider is available."""
+    return (env.get("OPENCODE_OPEN_MODEL") or "").strip() or DEFAULT_OPEN_MODEL
+
+
+def opencode_model_chain(env: dict[str, str]) -> list[str]:
+    """The models OpenCode should try, in order: the preferred model, then fallbacks.
+
+    OPENCODE_MODEL is the preferred model. OPENCODE_FALLBACK_MODELS is an optional
+    comma-separated, ordered list tried only when an earlier model fails (e.g. NVIDIA
+    NIM is overloaded / unavailable) — typically free OpenCode Zen models of the form
+    `opencode/<id>`. Order is preserved and duplicates are dropped.
+
+    Models whose provider has no usable key are dropped (so the default `nvidia/...`
+    model is skipped when NVIDIA_API_KEY is unset or still the placeholder). If that
+    leaves nothing runnable, the free open model (OPENCODE_OPEN_MODEL, default
+    DEFAULT_OPEN_MODEL) is used — so the open fallback becomes operational with no key.
+    """
+    primary = (env.get("OPENCODE_MODEL") or "").strip() or DEFAULT_MODEL
+    raw = env.get("OPENCODE_FALLBACK_MODELS") or ""
+    chain: list[str] = []
+    for m in [primary, *(s.strip() for s in raw.split(","))]:
+        if m and m not in chain:
+            chain.append(m)
+
+    usable = [m for m in chain if _model_usable(m, env)]
+    return usable or [_open_model(env)]
+
+
 def invoke_opencode(prompt: str, run_dir: Path, title: str) -> int:
+    """Run OpenCode once, falling back through the model chain if a model is unavailable.
+
+    Tries each model from opencode_model_chain in order and stops at the first that
+    exits 0. A nonzero exit or a timeout (OPENCODE_TIMEOUT_SECONDS, 0 = no limit) counts
+    as a failure and moves on to the next model — this is what keeps the loop alive when
+    the preferred provider is overloaded. Returns the exit code of the model that
+    succeeded, or of the last model tried. The per-attempt outcome is logged to
+    opencode.attempts.txt and the chosen attempt's output to opencode.jsonl.
+    """
     env = load_dotenv()
-    model = env.get("OPENCODE_MODEL", "nvidia/deepseek-ai/deepseek-v4-pro")
+    chain = opencode_model_chain(env)
 
     runtime_cfg = render_runtime_config(env)
     if runtime_cfg is not None:
         env["OPENCODE_CONFIG"] = str(runtime_cfg)
 
-    cmd = [
-        "opencode",
-        "run",
-        "--dir", str(ROOT),
-        "--model", model,
-        "--format", "json",
-        "--title", title,
-    ]
+    timeout = _env_int(env, "OPENCODE_TIMEOUT_SECONDS", 0) or None
 
-    if env.get("OPENCODE_CONTINUE", "0") == "1":
-        cmd.append("--continue")
+    rc, stdout, last_cmd = 1, "", []
+    attempts: list[str] = []
+    for model in chain:
+        cmd = ["opencode", "run", "--dir", str(ROOT), "--model", model,
+               "--format", "json", "--title", title]
+        if env.get("OPENCODE_CONTINUE", "0") == "1":
+            cmd.append("--continue")
+        # The harness assumes a sandbox and headless, unattended operation, so it
+        # skips interactive permission prompts by default — a run with no human in
+        # the loop cannot answer them. Set OPENCODE_AUTO_APPROVE=0 only for manual,
+        # supervised runs in a trusted environment.
+        if env.get("OPENCODE_AUTO_APPROVE", "1") != "0":
+            cmd.append("--dangerously-skip-permissions")
+        cmd.append(prompt)
+        last_cmd = cmd
 
-    # The harness assumes a sandbox and headless, unattended operation, so it
-    # skips interactive permission prompts by default — a run with no human in
-    # the loop cannot answer them. Set OPENCODE_AUTO_APPROVE=0 only for manual,
-    # supervised runs in a trusted environment.
-    if env.get("OPENCODE_AUTO_APPROVE", "1") != "0":
-        cmd.append("--dangerously-skip-permissions")
+        try:
+            p = subprocess.run(cmd, cwd=str(ROOT), env=env, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               check=False, timeout=timeout)
+            rc, stdout = p.returncode, (p.stdout or "")
+            note = "ok" if rc == 0 else f"exit {rc}"
+        except subprocess.TimeoutExpired as e:
+            out = e.stdout
+            stdout = out.decode(errors="replace") if isinstance(out, bytes) else (out or "")
+            rc, note = 124, f"timeout after {timeout}s"
 
-    cmd.append(prompt)
+        attempts.append(f"{model}\t{note}")
+        if rc == 0:
+            break
+        if model != chain[-1]:
+            print(f"researcher-harness: model '{model}' failed ({note}); "
+                  f"falling back to next model.", file=sys.stderr)
 
-    (run_dir / "opencode.cmd.txt").write_text(" ".join(shlex.quote(x) for x in cmd) + "\n")
-    p = run(cmd, env=env, check=False)
-    (run_dir / "opencode.jsonl").write_text(p.stdout or "")
-    return p.returncode
+    (run_dir / "opencode.cmd.txt").write_text(" ".join(shlex.quote(x) for x in last_cmd) + "\n")
+    (run_dir / "opencode.jsonl").write_text(stdout)
+    (run_dir / "opencode.attempts.txt").write_text("\n".join(attempts) + "\n")
+    return rc
 
 
 def make_eval_if_needed(run_dir: Path) -> None:
@@ -583,16 +682,26 @@ def check() -> None:
         print("WARNING: eval.sh is still the placeholder; replace it or let the first run "
               "auto-generate one from knowledge_base/ and target_repo/.", file=sys.stderr)
 
-    if load_dotenv().get("OPENCODE_AUTO_APPROVE", "1") == "0":
+    env = load_dotenv()
+    if env.get("OPENCODE_AUTO_APPROVE", "1") == "0":
         print("WARNING: OPENCODE_AUTO_APPROVE=0 disables --dangerously-skip-permissions; "
               "headless runs will stall on permission prompts. The harness assumes a "
               "sandbox and unattended operation — leave it unset or 1 unless you are "
               "supervising the run.", file=sys.stderr)
 
+    chain = opencode_model_chain(env)
+    preferred = (env.get("OPENCODE_MODEL") or "").strip() or DEFAULT_MODEL
+    if not _model_usable(preferred, env):
+        print(f"WARNING: no usable API key for the preferred model '{preferred}'; the "
+              f"harness will run on the open model instead. For free OpenCode Zen models "
+              f"run 'opencode auth login' and verify the id with 'setup/set_model.sh "
+              f"list', or set the provider key in .env.", file=sys.stderr)
+
     print(f"root:        {ROOT}")
     print(f"target repo: {TARGET}")
     print(f"knowledge:   {KB}")
     print(f"eval:        {EVAL}")
+    print(f"model chain: {' -> '.join(chain)}")
     print("Setup check complete.")
 
 
