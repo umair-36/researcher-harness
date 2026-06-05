@@ -10,6 +10,7 @@ usage() {
 Usage:
   setup/set_model.sh <preset|provider/model-id> [API_KEY]   set the preferred model
   setup/set_model.sh fallback "<m1,m2,...>"                  set the fallback chain ("" clears)
+  setup/set_model.sh open <opencode/id>                      set the auto open-model (no key)
   setup/set_model.sh list                                    list available model ids
 
 Presets (verify exact ids for your account at build.nvidia.com):
@@ -26,6 +27,10 @@ Fallback: OPENCODE_FALLBACK_MODELS is tried in order when the preferred model fa
 (e.g. NVIDIA NIM overloaded). Free OpenCode Zen ids (opencode/<id>) make good
 fallbacks — 'setup/set_model.sh list' or https://opencode.ai/zen for current ids:
   setup/set_model.sh fallback "opencode/big-pickle,opencode/nemotron-3-super"
+
+No key? If the preferred model's provider has no usable key (e.g. NVIDIA_API_KEY
+unset or still the placeholder), the harness automatically runs on the open model
+(OPENCODE_OPEN_MODEL); set it with 'setup/set_model.sh open opencode/<id>'.
 EOF
 }
 
@@ -43,6 +48,14 @@ case "$1" in
     else
       ok "OPENCODE_FALLBACK_MODELS cleared (fallback disabled)"
     fi
+    exit 0
+    ;;
+  open)
+    [[ $# -ge 2 ]] || { err "usage: setup/set_model.sh open <opencode/id>  (auto-used when the preferred model's provider has no key)"; exit 1; }
+    upsert_env OPENCODE_OPEN_MODEL "$2"
+    ok "OPENCODE_OPEN_MODEL = $2"
+    info "Used automatically when the preferred model's provider has no usable key."
+    [[ "$2" == opencode/* ]] && info "OpenCode Zen needs 'opencode auth login' (free tier, no API key)."
     exit 0
     ;;
   list)

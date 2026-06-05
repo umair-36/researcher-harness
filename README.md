@@ -190,6 +190,18 @@ setup/set_model.sh fallback "opencode/big-pickle,opencode/nemotron-3-super"
 Leave `OPENCODE_FALLBACK_MODELS` empty to disable fallback (the default). See
 https://opencode.ai/zen for the current free models.
 
+**No API key? The open model engages automatically.** A model whose provider
+needs a key (e.g. the default `nvidia/...`) is treated as unrunnable when that
+key is unset or still the `…REPLACE_ME` placeholder. The harness then skips it
+and runs on the free open model (`OPENCODE_OPEN_MODEL`, default an OpenCode Zen
+model) — so a fresh checkout with no `NVIDIA_API_KEY` works out of the box once
+you `opencode auth login`. `python3 harness.py check` prints the resolved chain
+and warns when this kicks in. Set the open model with:
+
+```bash
+setup/set_model.sh open opencode/big-pickle
+```
+
 ## Safety boundary
 
 The harness assumes it runs **in a sandbox** and **headlessly, with no human in

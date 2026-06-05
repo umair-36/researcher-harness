@@ -54,6 +54,23 @@ DEFAULT_MODEL = "nvidia/deepseek-ai/deepseek-v4-pro"
 # as the default main model, so it reuses NVIDIA_API_KEY). Override with KB_AGENT_MODEL.
 FLASH_DEFAULT = "nvidia/deepseek-ai/deepseek-v4-flash"
 
+# Providers whose models need an API key in .env, and the var that holds it. A model
+# whose provider is listed here only runs when that key is set to a real value (not
+# empty and not the .env.example "...REPLACE_ME" placeholder). Providers not listed
+# (e.g. `opencode`, which uses `opencode auth login`) need no key and are always usable.
+PROVIDER_KEY_VARS = {
+    "nvidia": "NVIDIA_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
+# Free open model the harness uses automatically when the configured model's provider
+# has no usable key (e.g. no NVIDIA_API_KEY) — so the loop still runs with no key set.
+# An OpenCode Zen model (free tier via `opencode auth login`); the free set rotates, so
+# verify the id with `setup/set_model.sh list`. Override with OPENCODE_OPEN_MODEL.
+DEFAULT_OPEN_MODEL = "opencode/big-pickle"
+
 # Knowledge-base context budgeting (all optional; safe defaults, zero setup required).
 # A KB text file is inlined in full only if it is at most KB_INLINE_MAX_BYTES and the
 # running total of inlined text stays at most KB_INLINE_TOTAL_BYTES. Everything else
@@ -325,7 +342,11 @@ def render_runtime_config(env: dict[str, str]) -> Path | None:
     src = ROOT / "opencode.jsonc"
     if not src.exists():
         return None
-    kb_model = (env.get("KB_AGENT_MODEL") or "").strip() or FLASH_DEFAULT
+    kb_model = (env.get("KB_AGENT_MODEL") or "").strip()
+    if not kb_model:
+        # Flash-tier by default, but if its provider key is missing use the open model
+        # so the kb-researcher subagent also works when no NVIDIA key is configured.
+        kb_model = FLASH_DEFAULT if _model_usable(FLASH_DEFAULT, env) else _open_model(env)
     try:
         body = "\n".join(ln for ln in src.read_text().splitlines() if not ln.lstrip().startswith("//"))
         cfg = json.loads(body)
@@ -341,6 +362,31 @@ def render_runtime_config(env: dict[str, str]) -> Path | None:
         return None
 
 
+def _key_is_set(env: dict[str, str], var: str) -> bool:
+    """True if env[var] looks like a real key: present, non-empty, not the placeholder."""
+    val = (env.get(var) or "").strip()
+    return bool(val) and not val.upper().endswith("REPLACE_ME")
+
+
+def _model_usable(model: str, env: dict[str, str]) -> bool:
+    """Can this provider/model-id actually run with the keys in env?
+
+    A model is usable when its provider needs no API key (anything not in
+    PROVIDER_KEY_VARS, e.g. `opencode`, which authenticates via `opencode auth login`)
+    or that provider's key is set to a real value. This is what lets the harness skip
+    the default `nvidia/...` model — and engage the open fallback — when no NVIDIA key
+    is configured.
+    """
+    provider = model.split("/", 1)[0]
+    key_var = PROVIDER_KEY_VARS.get(provider)
+    return key_var is None or _key_is_set(env, key_var)
+
+
+def _open_model(env: dict[str, str]) -> str:
+    """The free open model to use when no keyed provider is available."""
+    return (env.get("OPENCODE_OPEN_MODEL") or "").strip() or DEFAULT_OPEN_MODEL
+
+
 def opencode_model_chain(env: dict[str, str]) -> list[str]:
     """The models OpenCode should try, in order: the preferred model, then fallbacks.
 
@@ -348,6 +394,11 @@ def opencode_model_chain(env: dict[str, str]) -> list[str]:
     comma-separated, ordered list tried only when an earlier model fails (e.g. NVIDIA
     NIM is overloaded / unavailable) — typically free OpenCode Zen models of the form
     `opencode/<id>`. Order is preserved and duplicates are dropped.
+
+    Models whose provider has no usable key are dropped (so the default `nvidia/...`
+    model is skipped when NVIDIA_API_KEY is unset or still the placeholder). If that
+    leaves nothing runnable, the free open model (OPENCODE_OPEN_MODEL, default
+    DEFAULT_OPEN_MODEL) is used — so the open fallback becomes operational with no key.
     """
     primary = (env.get("OPENCODE_MODEL") or "").strip() or DEFAULT_MODEL
     raw = env.get("OPENCODE_FALLBACK_MODELS") or ""
@@ -355,7 +406,9 @@ def opencode_model_chain(env: dict[str, str]) -> list[str]:
     for m in [primary, *(s.strip() for s in raw.split(","))]:
         if m and m not in chain:
             chain.append(m)
-    return chain or [DEFAULT_MODEL]
+
+    usable = [m for m in chain if _model_usable(m, env)]
+    return usable or [_open_model(env)]
 
 
 def invoke_opencode(prompt: str, run_dir: Path, title: str) -> int:
@@ -629,17 +682,26 @@ def check() -> None:
         print("WARNING: eval.sh is still the placeholder; replace it or let the first run "
               "auto-generate one from knowledge_base/ and target_repo/.", file=sys.stderr)
 
-    if load_dotenv().get("OPENCODE_AUTO_APPROVE", "1") == "0":
+    env = load_dotenv()
+    if env.get("OPENCODE_AUTO_APPROVE", "1") == "0":
         print("WARNING: OPENCODE_AUTO_APPROVE=0 disables --dangerously-skip-permissions; "
               "headless runs will stall on permission prompts. The harness assumes a "
               "sandbox and unattended operation — leave it unset or 1 unless you are "
               "supervising the run.", file=sys.stderr)
 
+    chain = opencode_model_chain(env)
+    preferred = (env.get("OPENCODE_MODEL") or "").strip() or DEFAULT_MODEL
+    if not _model_usable(preferred, env):
+        print(f"WARNING: no usable API key for the preferred model '{preferred}'; the "
+              f"harness will run on the open model instead. For free OpenCode Zen models "
+              f"run 'opencode auth login' and verify the id with 'setup/set_model.sh "
+              f"list', or set the provider key in .env.", file=sys.stderr)
+
     print(f"root:        {ROOT}")
     print(f"target repo: {TARGET}")
     print(f"knowledge:   {KB}")
     print(f"eval:        {EVAL}")
-    print(f"model chain: {' -> '.join(opencode_model_chain(load_dotenv()))}")
+    print(f"model chain: {' -> '.join(chain)}")
     print("Setup check complete.")
 
 
