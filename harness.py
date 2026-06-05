@@ -45,6 +45,11 @@ RUNS = ROOT / "runs"
 HISTORY = STATE / "history.jsonl"
 BEST = STATE / "best.json"
 
+# The preferred main worker model; override with OPENCODE_MODEL in .env. When this
+# provider is overloaded or unavailable (NVIDIA NIM frequently is), the harness
+# retries with the models in OPENCODE_FALLBACK_MODELS — see opencode_model_chain.
+DEFAULT_MODEL = "nvidia/deepseek-ai/deepseek-v4-pro"
+
 # A lighter, cheaper model for the kb-researcher extraction subagent (same provider
 # as the default main model, so it reuses NVIDIA_API_KEY). Override with KB_AGENT_MODEL.
 FLASH_DEFAULT = "nvidia/deepseek-ai/deepseek-v4-flash"
@@ -336,39 +341,80 @@ def render_runtime_config(env: dict[str, str]) -> Path | None:
         return None
 
 
+def opencode_model_chain(env: dict[str, str]) -> list[str]:
+    """The models OpenCode should try, in order: the preferred model, then fallbacks.
+
+    OPENCODE_MODEL is the preferred model. OPENCODE_FALLBACK_MODELS is an optional
+    comma-separated, ordered list tried only when an earlier model fails (e.g. NVIDIA
+    NIM is overloaded / unavailable) — typically free OpenCode Zen models of the form
+    `opencode/<id>`. Order is preserved and duplicates are dropped.
+    """
+    primary = (env.get("OPENCODE_MODEL") or "").strip() or DEFAULT_MODEL
+    raw = env.get("OPENCODE_FALLBACK_MODELS") or ""
+    chain: list[str] = []
+    for m in [primary, *(s.strip() for s in raw.split(","))]:
+        if m and m not in chain:
+            chain.append(m)
+    return chain or [DEFAULT_MODEL]
+
+
 def invoke_opencode(prompt: str, run_dir: Path, title: str) -> int:
+    """Run OpenCode once, falling back through the model chain if a model is unavailable.
+
+    Tries each model from opencode_model_chain in order and stops at the first that
+    exits 0. A nonzero exit or a timeout (OPENCODE_TIMEOUT_SECONDS, 0 = no limit) counts
+    as a failure and moves on to the next model — this is what keeps the loop alive when
+    the preferred provider is overloaded. Returns the exit code of the model that
+    succeeded, or of the last model tried. The per-attempt outcome is logged to
+    opencode.attempts.txt and the chosen attempt's output to opencode.jsonl.
+    """
     env = load_dotenv()
-    model = env.get("OPENCODE_MODEL", "nvidia/deepseek-ai/deepseek-v4-pro")
+    chain = opencode_model_chain(env)
 
     runtime_cfg = render_runtime_config(env)
     if runtime_cfg is not None:
         env["OPENCODE_CONFIG"] = str(runtime_cfg)
 
-    cmd = [
-        "opencode",
-        "run",
-        "--dir", str(ROOT),
-        "--model", model,
-        "--format", "json",
-        "--title", title,
-    ]
+    timeout = _env_int(env, "OPENCODE_TIMEOUT_SECONDS", 0) or None
 
-    if env.get("OPENCODE_CONTINUE", "0") == "1":
-        cmd.append("--continue")
+    rc, stdout, last_cmd = 1, "", []
+    attempts: list[str] = []
+    for model in chain:
+        cmd = ["opencode", "run", "--dir", str(ROOT), "--model", model,
+               "--format", "json", "--title", title]
+        if env.get("OPENCODE_CONTINUE", "0") == "1":
+            cmd.append("--continue")
+        # The harness assumes a sandbox and headless, unattended operation, so it
+        # skips interactive permission prompts by default — a run with no human in
+        # the loop cannot answer them. Set OPENCODE_AUTO_APPROVE=0 only for manual,
+        # supervised runs in a trusted environment.
+        if env.get("OPENCODE_AUTO_APPROVE", "1") != "0":
+            cmd.append("--dangerously-skip-permissions")
+        cmd.append(prompt)
+        last_cmd = cmd
 
-    # The harness assumes a sandbox and headless, unattended operation, so it
-    # skips interactive permission prompts by default — a run with no human in
-    # the loop cannot answer them. Set OPENCODE_AUTO_APPROVE=0 only for manual,
-    # supervised runs in a trusted environment.
-    if env.get("OPENCODE_AUTO_APPROVE", "1") != "0":
-        cmd.append("--dangerously-skip-permissions")
+        try:
+            p = subprocess.run(cmd, cwd=str(ROOT), env=env, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               check=False, timeout=timeout)
+            rc, stdout = p.returncode, (p.stdout or "")
+            note = "ok" if rc == 0 else f"exit {rc}"
+        except subprocess.TimeoutExpired as e:
+            out = e.stdout
+            stdout = out.decode(errors="replace") if isinstance(out, bytes) else (out or "")
+            rc, note = 124, f"timeout after {timeout}s"
 
-    cmd.append(prompt)
+        attempts.append(f"{model}\t{note}")
+        if rc == 0:
+            break
+        if model != chain[-1]:
+            print(f"researcher-harness: model '{model}' failed ({note}); "
+                  f"falling back to next model.", file=sys.stderr)
 
-    (run_dir / "opencode.cmd.txt").write_text(" ".join(shlex.quote(x) for x in cmd) + "\n")
-    p = run(cmd, env=env, check=False)
-    (run_dir / "opencode.jsonl").write_text(p.stdout or "")
-    return p.returncode
+    (run_dir / "opencode.cmd.txt").write_text(" ".join(shlex.quote(x) for x in last_cmd) + "\n")
+    (run_dir / "opencode.jsonl").write_text(stdout)
+    (run_dir / "opencode.attempts.txt").write_text("\n".join(attempts) + "\n")
+    return rc
 
 
 def make_eval_if_needed(run_dir: Path) -> None:
@@ -593,6 +639,7 @@ def check() -> None:
     print(f"target repo: {TARGET}")
     print(f"knowledge:   {KB}")
     print(f"eval:        {EVAL}")
+    print(f"model chain: {' -> '.join(opencode_model_chain(load_dotenv()))}")
     print("Setup check complete.")
 
 
