@@ -229,24 +229,44 @@ backend (`localfile`) sends nothing off the machine; `ntfy`, `telegram`, and
 - Verified end-to-end with a cubic polynomial-fitting demo: agent runs, eval fires,
   keep/revert logic works, `state/` and `runs/` populate correctly.
 - Python 3.10 compatibility fixes across `harness.py` and supporting scripts.
-- Agent model fallback for free-only provider keys (no `NVIDIA_API_KEY` → auto-engages
-  the open model).
 - Captured demo run outcomes committed to the repo as a reference trace.
 - PR review recipe and reproduction script added (`setup/`).
+- Restored the generic `eval.sh` stub alongside the cubic-polyfit recipe so new
+  checkouts start clean.
 
-### v0 — harness refactor: minimal structure
+### v0.0.3 — open-model auto-engage and iteration protocol
 
-- Dropped the `operational/` directory entirely; introduced `target_repo/` and
-  `knowledge_base/` as the two external concerns the harness operates on.
-- `harness.py` became the single source of truth for the loop (reset → agent edit →
-  eval → keep/revert).
-- Added headless, sandboxed autonomy defaults (`--dangerously-skip-permissions`,
-  all tools `allow` in `opencode.jsonc`).
+- **No API key? Just works.** When the configured model's provider key is unset or
+  still the placeholder, the harness automatically falls back to the free open model
+  (`OPENCODE_OPEN_MODEL`) so a fresh checkout requires nothing beyond
+  `opencode auth login`.
+- `OPENCODE_FALLBACK_MODELS` chain: ordered comma-separated list of models to try
+  in sequence when the preferred one fails or times out; each attempt is recorded in
+  `runs/<id>/opencode.attempts.txt`.
+- `ITERATION.md` split out from `CLAUDE.md` as a lazy-loaded single-iteration
+  protocol — `CLAUDE.md` stays lean; the full protocol only enters context when
+  the agent actually needs it.
+- `CLAUDE.md` added for first-class manual Claude Code use of the harness.
+
+### v0.0.2 — knowledge base subagent and headless defaults
+
 - `kb-researcher` subagent wired in: large PDFs and notes are extracted in an
-  isolated context rather than inlined into the main agent loop.
-- `CLAUDE.md` added for manual Claude Code use of the harness.
-- `ITERATION.md` split out as a lazy-loaded single-iteration protocol to keep
-  `CLAUDE.md` lean.
+  isolated context and only the distilled facts are returned — a 50-page PDF never
+  lands in the main agent loop's context window.
+- Manifest system: small text notes are inlined in full; everything else (large notes,
+  PDFs, `knowledge_base/library/`) appears in a manifest the subagent reads on demand.
+- Wired automatically for both OpenCode (`agent` block in `opencode.jsonc`) and
+  manual Claude Code use (`.claude/agents/kb-researcher.md`).
+- Headless, sandboxed autonomy set as the default: `--dangerously-skip-permissions`
+  and all tools `allow` in `opencode.jsonc` so iterations never block.
+
+### v0 — harness restructure: minimal two-concern layout
+
+- Dropped the `operational/` directory entirely; the repo now has exactly two external
+  concerns: `target_repo/` (the code being improved) and `knowledge_base/` (the
+  research material).
+- `harness.py` became the single source of truth for the loop
+  (reset → agent edit → eval → keep/revert).
 
 ### Pre-v0 — initial structure and early reorganisation
 
