@@ -6,10 +6,11 @@ target's structure: you drop the code in `target_repo/` and the research
 material in `knowledge_base/`, and the harness does the rest.
 
 **Motivated by** [Andrej Karpathy's autoresearch](https://github.com/karpathy/autoresearch) —
-the idea of using an autonomous agent in a tight eval-gated loop to iteratively
-improve a codebase or model, with the human setting goals and the machine doing
-the search. This repo is an attempt to build that loop into a reusable, configurable
-harness with pluggable agents, orchestrators, and messaging backends.
+the idea of using an autonomous repository-wide coding agents in a tight eval-gated loop
+to iteratively improve a codebase or model, with the human setting goals with knowledge base
+and research directions while the machine does the search. This repo is an attempt to build that
+loop into a reusable, configurable harness with pluggable agents, orchestrators, and messaging
+backends.
 
 ---
 
