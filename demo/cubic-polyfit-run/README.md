@@ -4,6 +4,24 @@ A captured, reproducible record of one `researcher-harness` session so the outco
 inspected without re-running the loop. See [`RUNBOOK.md`](../../RUNBOOK.md) for the full
 setup that produced this.
 
+## Reproduce
+
+`reproduce.sh` automates the entire `RUNBOOK.md` happy path (install OpenCode, configure
+the model + env, clone the target, build the venv + deps, seed the knowledge base,
+install the captured `eval.sh`, and verify). It is idempotent and safe to re-run. The
+loop itself is opt-in behind `--run`, since it hits the model API.
+
+```bash
+# Setup only (stops after harness check, prints next steps):
+./demo/cubic-polyfit-run/reproduce.sh <OPENROUTER_API_KEY>
+
+# Setup, then run the first iteration:
+./demo/cubic-polyfit-run/reproduce.sh <OPENROUTER_API_KEY> --run
+```
+
+The key may also be supplied via `$OPENROUTER_API_KEY`; if omitted, the model/key step is
+skipped and any existing `.env` is preserved.
+
 ## Configuration
 
 | Setting | Value |
@@ -44,6 +62,8 @@ score-gated loop correctly stopped keeping changes instead of thrashing.
 | `final-metrics.csv` | `outputs/metrics.csv` at the best commit (RMSE, MAE, R²) |
 | `diffs/01-baseline-to-sin-x.diff` | iteration 2 source change (baseline → `sin(x)`) |
 | `diffs/02-sin-x-to-sin-2.5x.diff` | iteration 3 source change (`sin(x)` → `sin(2.5x)`) |
+| `eval.sh` | the cubic-specific evaluator used in this run (runs `src/cubic_fit.py`, reads RMSE from `outputs/metrics.csv`). The tracked root `eval.sh` is a generic stub; `reproduce.sh` copies this in. |
+| `reproduce.sh` | one-shot, idempotent recipe that recreates this run's setup (see **Reproduce** above) |
 
 Diffs are source-only (`src/cubic_fit.py`); the harness's full `runs/<id>/git.diff.patch`
 also contains a ~1.3 MB regenerated-PDF binary delta, omitted here as noise. `runs/`,
