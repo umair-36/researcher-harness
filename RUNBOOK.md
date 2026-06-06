@@ -4,6 +4,11 @@ This runbook documents the complete, happy-path setup and operation of
 `researcher-harness` targeting `Meta2096/cubic-polyfit` with a free
 OpenRouter model.
 
+> **Shortcut:** steps 1–6 below are scripted by
+> [`demo/cubic-polyfit-run/reproduce.sh`](demo/cubic-polyfit-run/reproduce.sh) (idempotent;
+> the loop is opt-in behind `--run`). Read on for what each step does, or just run:
+> `./demo/cubic-polyfit-run/reproduce.sh <OPENROUTER_API_KEY>`.
+
 ---
 
 ## Prerequisites
