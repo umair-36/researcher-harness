@@ -5,6 +5,15 @@ at a repository and loops on measurable improvements. It carries none of the
 target's structure: you drop the code in `target_repo/` and the research
 material in `knowledge_base/`, and the harness does the rest.
 
+**Motivated by** [Andrej Karpathy's autoresearch](https://github.com/karpathy/autoresearch) —
+the idea of using an autonomous repository-wide coding agents in a tight eval-gated loop
+to iteratively improve a codebase or model, with the human setting goals with knowledge base
+and research directions while the machine does the search. This repo is an attempt to build that
+loop into a reusable, configurable harness with pluggable agents, orchestrators, and messaging
+backends.
+
+---
+
 ## Layout
 
 ```text
@@ -211,3 +220,118 @@ permission prompt. Run it only in a disposable working tree or container, and
 keep secrets out of `target_repo/` and `knowledge_base/`. The default messaging
 backend (`localfile`) sends nothing off the machine; `ntfy`, `telegram`, and
 `discord` publish content to an external service — enable them deliberately.
+
+---
+
+## Changelog
+
+### v0.1 — first end-to-end working version *(current)*
+
+- Verified end-to-end with a cubic polynomial-fitting demo: agent runs, eval fires,
+  keep/revert logic works, `state/` and `runs/` populate correctly.
+- Python 3.10 compatibility fixes across `harness.py` and supporting scripts.
+- Captured demo run outcomes committed to the repo as a reference trace.
+- PR review recipe and reproduction script added (`setup/`).
+- Restored the generic `eval.sh` stub alongside the cubic-polyfit recipe so new
+  checkouts start clean.
+
+### v0.0.3 — open-model auto-engage and iteration protocol
+
+- **No API key? Just works.** When the configured model's provider key is unset or
+  still the placeholder, the harness automatically falls back to the free open model
+  (`OPENCODE_OPEN_MODEL`) so a fresh checkout requires nothing beyond
+  `opencode auth login`.
+- `OPENCODE_FALLBACK_MODELS` chain: ordered comma-separated list of models to try
+  in sequence when the preferred one fails or times out; each attempt is recorded in
+  `runs/<id>/opencode.attempts.txt`.
+- `ITERATION.md` split out from `CLAUDE.md` as a lazy-loaded single-iteration
+  protocol — `CLAUDE.md` stays lean; the full protocol only enters context when
+  the agent actually needs it.
+- `CLAUDE.md` added for first-class manual Claude Code use of the harness.
+
+### v0.0.2 — knowledge base subagent and headless defaults
+
+- `kb-researcher` subagent wired in: large PDFs and notes are extracted in an
+  isolated context and only the distilled facts are returned — a 50-page PDF never
+  lands in the main agent loop's context window.
+- Manifest system: small text notes are inlined in full; everything else (large notes,
+  PDFs, `knowledge_base/library/`) appears in a manifest the subagent reads on demand.
+- Wired automatically for both OpenCode (`agent` block in `opencode.jsonc`) and
+  manual Claude Code use (`.claude/agents/kb-researcher.md`).
+- Headless, sandboxed autonomy set as the default: `--dangerously-skip-permissions`
+  and all tools `allow` in `opencode.jsonc` so iterations never block.
+
+### v0 — harness restructure: minimal two-concern layout
+
+- Dropped the `operational/` directory entirely; the repo now has exactly two external
+  concerns: `target_repo/` (the code being improved) and `knowledge_base/` (the
+  research material).
+- `harness.py` became the single source of truth for the loop
+  (reset → agent edit → eval → keep/revert).
+
+### Pre-v0 — initial structure and early reorganisation
+
+- **Initial commit**: flat structure, `harness.py` stub, bare `eval.sh`, no
+  orchestrator or messaging.
+- Bug fixes and tightening of the initial implementation found during a validation
+  review.
+- Toy-classifier example dataset and an end-to-end test script added.
+- First major reorganisation: introduced `operational/`, `setup/`, `orchestrator/`,
+  and `messaging/` as separate concerns with their own READMEs.
+- Pluggable orchestrator backends (`none`, `nemotron`, `openclaw`/`custom`) and
+  pluggable messaging backends (`localfile`, `ntfy`, `telegram`, `discord`).
+- Model preset system (`setup/set_model.sh`) and fallback chain
+  (`OPENCODE_FALLBACK_MODELS`, `OPENCODE_OPEN_MODEL`).
+
+---
+
+## TODO
+
+### Agent / worker
+
+- [ ] **Claude Code SDK / Agents SDK harness** — a drop-in replacement for the
+      OpenCode worker that drives a Claude Code agent programmatically (no shell
+      subprocess, structured tool calls, tighter control over the agent's context).
+- [ ] **Additional worker backends** — Aider, Cursor background agent, or a raw
+      API call with a code-editing scaffold; selectable via `WORKER_BACKEND`.
+- [ ] **Router layer** — before handing a task to the worker, a lightweight router
+      decides which worker, which model, and how many iterations to budget based on
+      task complexity and remaining token/cost budget.
+
+### Eval and scoring
+
+- [ ] **Multi-metric eval** — `eval.sh` currently emits a single scalar; support a
+      weighted combination of metrics (loss, throughput, test-pass rate, …) with
+      weights set in `.env`.
+- [ ] **Eval caching** — skip re-running the eval when `target_repo/` is unchanged
+      (hash the tree, cache the result).
+- [ ] **Stochastic eval averaging** — run `eval.sh` N times and average to reduce
+      noise when the scorer is non-deterministic.
+
+### Harness configuration knobs
+
+- [ ] **Budget controls** — `MAX_COST_USD`, `MAX_TOKENS`, `MAX_WALL_SECONDS` to
+      cap runaway loops.
+- [ ] **Iteration-level timeouts** — per-iteration wall-clock limit independent of
+      the model timeout.
+- [ ] **Convergence detection** — stop early when the score hasn't improved in K
+      consecutive iterations.
+- [ ] **Parallel workers** — run N agents on N clones of `target_repo/` in parallel,
+      keep the best result.
+
+### Orchestrator
+
+- [ ] **Claude-as-orchestrator** — replace the rule-based `none` backend with a
+      Claude API call that can interpret free-form requests and make richer decisions.
+- [ ] **Scheduled runs** — cron-style `ORCH_SCHEDULE` to kick off loops automatically.
+- [ ] **Web UI** — a minimal dashboard to view `state/history.jsonl`, trigger runs,
+      and inspect `runs/` logs without SSH.
+
+### Tooling and DX
+
+- [ ] **`harness.py replay`** — re-run eval on every commit in `runs/` to reconstruct
+      the score history after changing `eval.sh`.
+- [ ] **Docker / devcontainer** — a one-command sandbox so users don't need to worry
+      about the safety boundary.
+- [ ] **GitHub Actions workflow** — run the loop in CI on a schedule or on push,
+      commit improvements back to a branch.
