@@ -50,8 +50,13 @@ Authenticate OpenCode if needed, then verify the harness:
 
 ```bash
 opencode auth login --provider nvidia   # if not already authenticated
-python3 harness.py check
+python3 harness.py check                 # static readiness check (no inference)
+python3 harness.py ping                  # one live inference to confirm the provider answers
 ```
+
+`ping` sends a trivial prompt to the model a run would actually use and reports whether it
+answered — the quickest way to confirm a provider/endpoint/key is working (e.g. a local
+`local-router` model) before starting the loop. Add `--all` to test every model in the chain.
 
 Put the code and the research material in place:
 
