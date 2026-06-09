@@ -18,6 +18,7 @@ Presets (verify exact ids for your account at build.nvidia.com):
   flash   nvidia/deepseek-ai/deepseek-v4-flash     (NVIDIA_API_KEY)  lighter / cheaper
   llama   nvidia/meta/llama-3.1-8b-instruct        (NVIDIA_API_KEY)  small free-tier example
   qwen    nvidia/qwen/qwen2.5-coder-32b-instruct   (NVIDIA_API_KEY)  coding-tuned example
+  local   local-router/qwen2.5-0.5b-instruct       (LOCAL_ROUTER_API_KEY)  self-hosted /v1 endpoint
 
 Anything containing '/' is treated as a literal provider/model-id, e.g. a free
 OpenCode Zen model: setup/set_model.sh opencode/big-pickle
@@ -78,6 +79,7 @@ case "$sel" in
   flash) model="nvidia/deepseek-ai/deepseek-v4-flash" ;;
   llama) model="nvidia/meta/llama-3.1-8b-instruct" ;;
   qwen)  model="nvidia/qwen/qwen2.5-coder-32b-instruct" ;;
+  local) model="local-router/qwen2.5-0.5b-instruct" ;;
   */*)   model="$sel" ;;
   *)     err "unknown preset '$sel' (and not a provider/model id)"; usage; exit 1 ;;
 esac
@@ -87,13 +89,18 @@ case "$provider" in
   nvidia)     key_var="NVIDIA_API_KEY" ;;
   openai)     key_var="OPENAI_API_KEY" ;;
   anthropic)  key_var="ANTHROPIC_API_KEY" ;;
-  openrouter) key_var="OPENROUTER_API_KEY" ;;
-  opencode)   key_var="" ;;  # OpenCode Zen authenticates via `opencode auth login`
-  *)          key_var="$(printf '%s' "$provider" | tr '[:lower:]' '[:upper:]')_API_KEY" ;;
+  openrouter)   key_var="OPENROUTER_API_KEY" ;;
+  opencode)     key_var="" ;;  # OpenCode Zen authenticates via `opencode auth login`
+  local-router) key_var="LOCAL_ROUTER_API_KEY" ;;  # self-hosted /v1 (see LOCAL_ROUTER_BASE_URL)
+  *)            key_var="$(printf '%s' "$provider" | tr '[:lower:].-' '[:upper:]__')_API_KEY" ;;
 esac
 
 upsert_env OPENCODE_MODEL "$model"
 ok "OPENCODE_MODEL = $model"
+
+if [[ "$provider" == "local-router" ]]; then
+  info "Also set the endpoint URL in .env: LOCAL_ROUTER_BASE_URL=http://<host>/v1"
+fi
 
 if [[ -z "$key_var" ]]; then
   info "Provider '$provider' authenticates via 'opencode auth login' (no API key var needed)."
