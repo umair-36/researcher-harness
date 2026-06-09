@@ -30,6 +30,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -495,6 +496,19 @@ def invoke_opencode(prompt: str, run_dir: Path, title: str) -> int:
 # A trivial prompt with no tool use — just enough to confirm the provider returns tokens.
 PING_PROMPT = "Reply with the single word: pong"
 
+# OpenCode exits 0 even when the underlying provider call fails — it renders the
+# transport/provider error as the assistant "reply" (e.g. a baseURL missing /v1 yields
+# "Error: Not Found"). Detect that rendering so a broken endpoint cannot pass the ping.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# OpenCode prints failures with an "Error: <message>" marker (rendered in red); the
+# trivial ping prompt never legitimately elicits that, so matching it anywhere is safe.
+_PING_ERROR_RE = re.compile(r"\bError:\s")
+
+
+def _looks_like_error_reply(text: str) -> bool:
+    """True if an OpenCode reply is actually a rendered provider/transport error."""
+    return bool(_PING_ERROR_RE.search(_ANSI_RE.sub("", text)))
+
 
 def ping_once(model: str, env: dict[str, str], timeout: int | None) -> dict[str, Any]:
     """Run one minimal inference against `model` to confirm its provider answers.
@@ -522,6 +536,11 @@ def ping_once(model: str, env: dict[str, str], timeout: int | None) -> dict[str,
         rc, err = 124, f"timeout after {timeout}s"
     except FileNotFoundError:
         out, rc, err = "", 127, "opencode not found on PATH"
+
+    # A clean exit with output is not enough: OpenCode reports provider errors as the
+    # reply itself, so flag an error-shaped reply as a failure instead of a pass.
+    if err is None and rc == 0 and out and _looks_like_error_reply(out):
+        err = "provider returned an error reply (see output)"
 
     return {
         "model": model,
