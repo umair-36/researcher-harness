@@ -124,6 +124,15 @@ python3 harness.py check
 Expected output: `Setup check complete.` with a warning that `eval.sh` is still the
 placeholder — that is intentional; the first `run` auto-generates it.
 
+For a live provider test (does the model actually answer?), send one inference:
+
+```bash
+python3 harness.py ping        # pings the preferred model; --all walks the whole chain
+```
+
+Expected output ends with `Provider check passed.`; a nonzero exit means the
+endpoint/key/model id needs fixing before running the loop.
+
 ---
 
 ## 7. Run the loop

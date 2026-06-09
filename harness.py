@@ -21,7 +21,8 @@ Everything the loop needs lives at the repo root:
 Usage:
     python3 harness.py run         # one iteration
     python3 harness.py loop [N]     # N iterations (default 10)
-    python3 harness.py check        # verify the harness is ready
+    python3 harness.py check        # verify the harness is ready (static, no inference)
+    python3 harness.py ping [--all] # one live inference to confirm the provider answers
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -490,6 +492,87 @@ def invoke_opencode(prompt: str, run_dir: Path, title: str) -> int:
     return rc
 
 
+# A trivial prompt with no tool use — just enough to confirm the provider returns tokens.
+PING_PROMPT = "Reply with the single word: pong"
+
+
+def ping_once(model: str, env: dict[str, str], timeout: int | None) -> dict[str, Any]:
+    """Run one minimal inference against `model` to confirm its provider answers.
+
+    Sends a trivial no-tools prompt through `opencode run` and reports whether the model
+    returned anything on a clean exit. Unlike invoke_opencode this never falls through to
+    another model — it tests exactly the id it was given so a provider/endpoint/key
+    problem surfaces instead of being masked by the fallback chain.
+    """
+    cmd = ["opencode", "run", "--dir", str(ROOT), "--model", model]
+    # Mirror the loop's headless assumption so a sandboxed run never blocks on a prompt.
+    if env.get("OPENCODE_AUTO_APPROVE", "1") != "0":
+        cmd.append("--dangerously-skip-permissions")
+    cmd.append(PING_PROMPT)
+
+    start = time.monotonic()
+    try:
+        p = subprocess.run(cmd, cwd=str(ROOT), env=env, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           check=False, timeout=timeout)
+        out, rc, err = (p.stdout or "").strip(), p.returncode, None
+    except subprocess.TimeoutExpired as e:
+        raw = e.stdout
+        out = (raw.decode(errors="replace") if isinstance(raw, bytes) else (raw or "")).strip()
+        rc, err = 124, f"timeout after {timeout}s"
+    except FileNotFoundError:
+        out, rc, err = "", 127, "opencode not found on PATH"
+
+    return {
+        "model": model,
+        "ok": rc == 0 and bool(out) and err is None,
+        "returncode": rc,
+        "seconds": round(time.monotonic() - start, 2),
+        "output": out,
+        "error": err,
+    }
+
+
+def ping(test_all: bool = False) -> None:
+    """Live provider check: send one inference and report whether the model answered.
+
+    By default pings only the first model in the chain — the one a run would actually use.
+    --all walks the entire chain (preferred + fallbacks) so you can see which providers are
+    reachable. Exits nonzero if nothing answered.
+    """
+    if shutil.which("opencode") is None:
+        raise SystemExit("opencode is not installed; run setup/setup_opencode.sh first")
+
+    env = load_dotenv()
+    runtime_cfg = render_runtime_config(env)
+    if runtime_cfg is not None:
+        env["OPENCODE_CONFIG"] = str(runtime_cfg)
+    timeout = _env_int(env, "OPENCODE_TIMEOUT_SECONDS", 0) or None
+
+    chain = opencode_model_chain(env)
+    print(f"model chain: {' -> '.join(chain)}")
+    models = chain if test_all else chain[:1]
+
+    any_ok = False
+    for model in models:
+        print(f"pinging {model} ...", file=sys.stderr)
+        res = ping_once(model, env, timeout)
+        reason = res["error"] or f"exit {res['returncode']}"
+        status = "ok" if res["ok"] else f"FAIL ({reason})"
+        print(f"  {model}: {status}  [{res['seconds']}s]")
+        snippet = res["output"].replace("\n", " ")
+        if snippet:
+            print(f"    reply: {(snippet[:200] + '…') if len(snippet) > 200 else snippet!r}")
+        any_ok = any_ok or res["ok"]
+
+    if not any_ok:
+        raise SystemExit(
+            "provider check FAILED: no model answered. Verify the endpoint is reachable, "
+            "the API key is set, and OPENCODE_MODEL is a valid id for that provider "
+            "(for local-router, check LOCAL_ROUTER_BASE_URL / LOCAL_ROUTER_API_KEY).")
+    print("Provider check passed.")
+
+
 def make_eval_if_needed(run_dir: Path) -> None:
     if EVAL.exists() and "TODO_HARNESS_EVAL" not in EVAL.read_text(errors="replace"):
         return
@@ -722,7 +805,7 @@ def check() -> None:
     print(f"knowledge:   {KB}")
     print(f"eval:        {EVAL}")
     print(f"model chain: {' -> '.join(chain)}")
-    print("Setup check complete.")
+    print("Setup check complete. Run 'python3 harness.py ping' for a live provider test.")
 
 
 def main() -> None:
@@ -733,6 +816,9 @@ def main() -> None:
     lp = sub.add_parser("loop", help="run N improvement iterations (default 10)")
     lp.add_argument("n", nargs="?", type=int, default=10)
     sub.add_parser("check", help="verify the harness is ready to run")
+    pg = sub.add_parser("ping", help="one live inference to confirm the provider answers")
+    pg.add_argument("--all", action="store_true", dest="ping_all",
+                    help="ping every model in the chain, not just the preferred one")
     args = parser.parse_args()
 
     cmd = args.cmd or "run"
@@ -740,6 +826,8 @@ def main() -> None:
         check()
     elif cmd == "loop":
         run_loop(args.n)
+    elif cmd == "ping":
+        ping(test_all=args.ping_all)
     else:
         run_iteration()
 
