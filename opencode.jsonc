@@ -25,6 +25,30 @@
           }
         }
       }
+    },
+
+    // Local / self-hosted OpenAI-compatible endpoint: a LAN model router, vLLM,
+    // llama.cpp, LM Studio, or Ollama's /v1. baseURL and apiKey are read from .env via
+    // {env:...} so no secret is committed — set LOCAL_ROUTER_BASE_URL and
+    // LOCAL_ROUTER_API_KEY there (see .env.example). To run headlessly on one of these,
+    // point OPENCODE_MODEL at it, e.g. OPENCODE_MODEL=local-router/qwen2.5-0.5b-instruct.
+    // The harness has no key gate for this provider (it is not in PROVIDER_KEY_VARS), so
+    // it always treats these models as runnable as long as the endpoint is reachable, and
+    // render_runtime_config auto-points the kb-researcher and internal agents here too.
+    "local-router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local Router",
+      "options": {
+        "baseURL": "{env:LOCAL_ROUTER_BASE_URL}",
+        "apiKey": "{env:LOCAL_ROUTER_API_KEY}"
+      },
+      "models": {
+        "qwen2.5-0.5b-instruct": { "name": "Qwen2.5 0.5B Instruct Local" },
+        "gemma3-1b": { "name": "Gemma 3 1B Local" },
+        "gemma3-4b": { "name": "Gemma 3 4B Local" },
+        "gemma3-12b": { "name": "Gemma 3 12B Local" },
+        "gemma-4-12b-qat": { "name": "Gemma 4 12B Local (256K)" }
+      }
     }
   },
 
