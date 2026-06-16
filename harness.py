@@ -30,6 +30,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -331,6 +332,28 @@ def knowledge_manifest(env: dict[str, str] | None = None) -> str:
     return "\n".join(parts).strip()
 
 
+_ENV_PLACEHOLDER = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_env_placeholders(obj: Any, env: dict[str, str]) -> Any:
+    """Resolve {env:VAR} placeholders in a parsed config using `env`.
+
+    OpenCode expands {env:...} itself when it loads a config, but that expansion is
+    unreliable for the apiKey of a custom @ai-sdk/openai-compatible provider (upstream
+    bug anomalyco/opencode#19946): it silently leaves the key empty, so a working endpoint
+    looks like an auth failure or a hang. We resolve the placeholders here — into the
+    gitignored runtime config — so OpenCode receives concrete values and never depends on
+    its own substitution. Missing vars expand to "" to match OpenCode's semantics.
+    """
+    if isinstance(obj, dict):
+        return {k: _expand_env_placeholders(v, env) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_placeholders(v, env) for v in obj]
+    if isinstance(obj, str):
+        return _ENV_PLACEHOLDER.sub(lambda m: env.get(m.group(1), ""), obj)
+    return obj
+
+
 def render_runtime_config(env: dict[str, str]) -> Path | None:
     """Render a runtime OpenCode config with agent models resolved.
 
@@ -376,6 +399,9 @@ def render_runtime_config(env: dict[str, str]) -> Path | None:
         for internal_agent in ("title", "summarizer", "task"):
             agents.setdefault(internal_agent, {})
             agents[internal_agent]["model"] = open_model
+        # Resolve {env:VAR} ourselves (see _expand_env_placeholders) so custom providers'
+        # baseURL/apiKey are concrete in the runtime config, dodging opencode#19946.
+        cfg = _expand_env_placeholders(cfg, env)
         STATE.mkdir(exist_ok=True)
         out = STATE / "opencode.runtime.json"
         out.write_text(json.dumps(cfg, indent=2) + "\n")
@@ -494,51 +520,83 @@ def invoke_opencode(prompt: str, run_dir: Path, title: str) -> int:
 
 # A trivial prompt with no tool use — just enough to confirm the provider returns tokens.
 PING_PROMPT = "Reply with the single word: pong"
+# A ping must fail loudly, not hang: the loop defaults OPENCODE_TIMEOUT_SECONDS to 0
+# (unlimited), which is the wrong default for a smoke test, so ping caps it here instead.
+PING_DEFAULT_TIMEOUT = 120
+# Strip terminal colour/styling so error detection and the printed reply are readable.
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
-def ping_once(model: str, env: dict[str, str], timeout: int | None) -> dict[str, Any]:
+def ping_once(model: str, env: dict[str, str], timeout: int | None,
+              *, stream: bool = False) -> dict[str, Any]:
     """Run one minimal inference against `model` to confirm its provider answers.
 
-    Sends a trivial no-tools prompt through `opencode run` and reports whether the model
-    returned anything on a clean exit. Unlike invoke_opencode this never falls through to
-    another model — it tests exactly the id it was given so a provider/endpoint/key
-    problem surfaces instead of being masked by the fallback chain.
+    Sends a trivial no-tools prompt through `opencode run`. Unlike invoke_opencode this
+    never falls through to another model — it tests exactly the id it was given so a
+    provider/endpoint/key fault surfaces instead of being masked by the fallback chain.
+
+    Crucially, `opencode run` exits 0 even when the provider call fails (it prints
+    `Error: ...` into its output, e.g. a 404 from a misrouted baseURL), so a clean exit
+    code is not sufficient: we strip ANSI and scan the text for an error marker. With
+    stream=True the child's output is inherited (shown live) for debugging — handy for a
+    hang or an opaque error — at the cost of not being able to parse the reply.
     """
     cmd = ["opencode", "run", "--dir", str(ROOT), "--model", model]
+    if stream:
+        cmd.append("--print-logs")
     # Mirror the loop's headless assumption so a sandboxed run never blocks on a prompt.
     if env.get("OPENCODE_AUTO_APPROVE", "1") != "0":
         cmd.append("--dangerously-skip-permissions")
     cmd.append(PING_PROMPT)
 
     start = time.monotonic()
+    out, rc, err = "", 1, None
     try:
-        p = subprocess.run(cmd, cwd=str(ROOT), env=env, text=True,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           check=False, timeout=timeout)
-        out, rc, err = (p.stdout or "").strip(), p.returncode, None
+        if stream:
+            print("$ " + " ".join(shlex.quote(x) for x in cmd), file=sys.stderr)
+            p = subprocess.run(cmd, cwd=str(ROOT), env=env, text=True,
+                               check=False, timeout=timeout)
+            rc = p.returncode
+        else:
+            p = subprocess.run(cmd, cwd=str(ROOT), env=env, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               check=False, timeout=timeout)
+            out, rc = (p.stdout or ""), p.returncode
     except subprocess.TimeoutExpired as e:
-        raw = e.stdout
-        out = (raw.decode(errors="replace") if isinstance(raw, bytes) else (raw or "")).strip()
+        raw = getattr(e, "stdout", None)
+        out = raw.decode(errors="replace") if isinstance(raw, bytes) else (raw or "")
         rc, err = 124, f"timeout after {timeout}s"
     except FileNotFoundError:
-        out, rc, err = "", 127, "opencode not found on PATH"
+        rc, err = 127, "opencode not found on PATH"
+
+    clean = ANSI_RE.sub("", out).strip()
+    if err is None:
+        m = re.search(r"Error:\s*(.+)", clean)
+        if m:
+            err = " ".join(m.group(1).split())[:300]
+        elif rc != 0:
+            err = f"exit {rc}"
+        elif not clean and not stream:
+            err = "no output from model"
 
     return {
         "model": model,
-        "ok": rc == 0 and bool(out) and err is None,
+        "ok": err is None and rc == 0,
         "returncode": rc,
         "seconds": round(time.monotonic() - start, 2),
-        "output": out,
+        "output": clean,
         "error": err,
     }
 
 
-def ping(test_all: bool = False) -> None:
+def ping(test_all: bool = False, verbose: bool = False,
+         timeout_override: int | None = None) -> None:
     """Live provider check: send one inference and report whether the model answered.
 
     By default pings only the first model in the chain — the one a run would actually use.
     --all walks the entire chain (preferred + fallbacks) so you can see which providers are
-    reachable. Exits nonzero if nothing answered.
+    reachable. --verbose streams opencode's own output/logs for debugging. Exits nonzero
+    if nothing answered cleanly.
     """
     if shutil.which("opencode") is None:
         raise SystemExit("opencode is not installed; run setup/setup_opencode.sh first")
@@ -547,29 +605,35 @@ def ping(test_all: bool = False) -> None:
     runtime_cfg = render_runtime_config(env)
     if runtime_cfg is not None:
         env["OPENCODE_CONFIG"] = str(runtime_cfg)
-    timeout = _env_int(env, "OPENCODE_TIMEOUT_SECONDS", 0) or None
+    if timeout_override is not None:
+        timeout = timeout_override or None  # --timeout 0 means no limit
+    else:
+        timeout = _env_int(env, "OPENCODE_TIMEOUT_SECONDS", 0) or PING_DEFAULT_TIMEOUT
 
     chain = opencode_model_chain(env)
     print(f"model chain: {' -> '.join(chain)}")
+    print(f"config:      {env.get('OPENCODE_CONFIG', '(default)')}")
+    print(f"timeout:     {timeout if timeout else 'none'}")
     models = chain if test_all else chain[:1]
 
     any_ok = False
     for model in models:
         print(f"pinging {model} ...", file=sys.stderr)
-        res = ping_once(model, env, timeout)
-        reason = res["error"] or f"exit {res['returncode']}"
-        status = "ok" if res["ok"] else f"FAIL ({reason})"
+        res = ping_once(model, env, timeout, stream=verbose)
+        status = "ok" if res["ok"] else f"FAIL ({res['error'] or 'exit ' + str(res['returncode'])})"
         print(f"  {model}: {status}  [{res['seconds']}s]")
-        snippet = res["output"].replace("\n", " ")
-        if snippet:
-            print(f"    reply: {(snippet[:200] + '…') if len(snippet) > 200 else snippet!r}")
+        if not verbose:
+            snippet = " ".join(res["output"].split())
+            if snippet:
+                print(f"    reply: {(snippet[:200] + '…') if len(snippet) > 200 else snippet!r}")
         any_ok = any_ok or res["ok"]
 
     if not any_ok:
         raise SystemExit(
-            "provider check FAILED: no model answered. Verify the endpoint is reachable, "
-            "the API key is set, and OPENCODE_MODEL is a valid id for that provider "
-            "(for local-router, check LOCAL_ROUTER_BASE_URL / LOCAL_ROUTER_API_KEY).")
+            "provider check FAILED: no model answered cleanly. Re-run with --verbose to see "
+            "opencode's logs. A '404 / Not Found' means the baseURL path is wrong — opencode "
+            "calls <baseURL>/chat/completions, so LOCAL_ROUTER_BASE_URL must be the part "
+            "before /chat/completions (e.g. http://host/v1). A 401 means the API key.")
     print("Provider check passed.")
 
 
@@ -819,6 +883,10 @@ def main() -> None:
     pg = sub.add_parser("ping", help="one live inference to confirm the provider answers")
     pg.add_argument("--all", action="store_true", dest="ping_all",
                     help="ping every model in the chain, not just the preferred one")
+    pg.add_argument("-v", "--verbose", action="store_true",
+                    help="stream opencode's output/logs live (for debugging hangs and errors)")
+    pg.add_argument("--timeout", type=int, default=None, metavar="SECONDS",
+                    help="abort a ping after N seconds (default 120; 0 = no limit)")
     args = parser.parse_args()
 
     cmd = args.cmd or "run"
@@ -827,7 +895,7 @@ def main() -> None:
     elif cmd == "loop":
         run_loop(args.n)
     elif cmd == "ping":
-        ping(test_all=args.ping_all)
+        ping(test_all=args.ping_all, verbose=args.verbose, timeout_override=args.timeout)
     else:
         run_iteration()
 
